@@ -3,6 +3,7 @@
 import asyncio
 import threading
 import os
+import time
 import uvicorn
 
 
@@ -22,12 +23,21 @@ async def _init_database():
     await db.sync_env_to_db()
 
 
+async def _reload_config():
+    """Reload config from DB after init."""
+    import db
+    import config
+    db_config = await db.get_all_config()
+    config.reload_from_db(db_config)
+
+
 def main():
     import config
     import providers
 
-    # Initialize database synchronously before anything else
+    # Initialize database and reload config from DB
     asyncio.run(_init_database())
+    asyncio.run(_reload_config())
 
     available = providers.get_available_providers()
 
@@ -41,27 +51,38 @@ def main():
     port = int(os.getenv("DASHBOARD_PORT", "8000"))
     print(f"  API server starting on http://localhost:{port}")
 
-    # Start Discord bot in main thread
+    # Wait for API to be ready
+    time.sleep(2)
+
     if not config.DISCORD_TOKEN:
         print("  WARNING: DISCORD_TOKEN not set — bot will not start.")
-        print("  API server is running. Use the dashboard to configure the bot.")
-        # Keep main thread alive for the API server
+        print(f"  Open http://localhost:{port} to configure the bot.")
         try:
             api_thread.join()
         except KeyboardInterrupt:
             print("\nShutting down...")
-            return
+        return
 
     if not available:
         print("  WARNING: No AI providers configured. Add at least one API key.")
-        print("  You can configure providers through the dashboard.")
 
     print(f"  Primary provider: {config.AI_PROVIDER}")
     print(f"  Fallback chain: {' -> '.join(available) if available else 'none'}")
     print("=" * 50)
 
-    from bot import bot
-    bot.run(config.DISCORD_TOKEN)
+    # Start bot using new async start() function
+    from bot import start
+    try:
+        asyncio.run(start())
+    except KeyboardInterrupt:
+        print("\nShutting down...")
+    except Exception as e:
+        print(f"\n  ERROR: Bot failed to start — {e}")
+        print("  Check your DISCORD_TOKEN and bot intents in the Discord Developer Portal.")
+        try:
+            api_thread.join()
+        except KeyboardInterrupt:
+            print("\nShutting down...")
 
 
 if __name__ == "__main__":

@@ -6,6 +6,9 @@ import datetime
 import hashlib
 import secrets
 
+from fastapi import Depends, HTTPException, status
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+
 JWT_SECRET = os.getenv("JWT_SECRET", "sparksage-dev-secret-change-me")
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRY_HOURS = 24
@@ -46,3 +49,23 @@ def decode_token(token: str) -> dict | None:
         return None
     except jwt.InvalidTokenError:
         return None
+
+
+bearer_scheme = HTTPBearer()
+
+
+def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme)) -> dict:
+    """FastAPI dependency — validates Bearer token and returns payload."""
+    token = credentials.credentials
+    payload = decode_token(token)
+    if not payload:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token"
+        )
+    return payload
+
+
+def require_auth(credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme)) -> dict:
+    """Alias for get_current_user — for backwards compatibility."""
+    return get_current_user(credentials)

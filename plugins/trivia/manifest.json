@@ -1,0 +1,8 @@
+{
+  "name": "Trivia",
+  "version": "1.0.0",
+  "author": "community",
+  "description": "Fun trivia game with AI-generated questions. Players answer questions and earn points.",
+  "cog": "trivia.py",
+  "commands": ["trivia", "trivia-score", "trivia-leaderboard"]
+}

@@ -3,10 +3,10 @@
 import { useEffect, useState } from "react";
 import { useSession } from "next-auth/react";
 import { Activity, Cpu, Wifi, WifiOff, Server, ArrowRight } from "lucide-react";
-import { api } from "@/lib/api";
-import type { BotStatus, ProviderItem, ProvidersResponse } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { api } from "@/lib/api";
+import type { BotStatus, ProvidersResponse, ProviderItem } from "@/lib/api";
 
 export default function DashboardOverview() {
   const { data: session } = useSession();
@@ -28,14 +28,13 @@ export default function DashboardOverview() {
     });
   }, [token]);
 
-  const primaryProvider = providersData?.providers.find((p) => p.is_primary);
+  const primaryProvider = providersData?.providers?.find((p) => p.is_primary);
 
   return (
     <div className="space-y-6">
       <h1 className="text-2xl font-bold">Overview</h1>
 
-      {/* Stats cards */}
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm font-medium">Bot Status</CardTitle>
@@ -63,9 +62,7 @@ export default function DashboardOverview() {
           </CardHeader>
           <CardContent>
             <p className="text-2xl font-bold">
-              {botStatus?.latency != null
-                ? `${Math.round(botStatus.latency)}ms`
-                : "--"}
+              {botStatus?.latency_ms != null ? `${Math.round(botStatus.latency_ms)}ms` : "--"}
             </p>
           </CardContent>
         </Card>
@@ -76,7 +73,7 @@ export default function DashboardOverview() {
             <Server className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <p className="text-2xl font-bold">{botStatus?.guilds ?? "--"}</p>
+            <p className="text-2xl font-bold">{botStatus?.guild_count ?? "--"}</p>
           </CardContent>
         </Card>
 
@@ -98,8 +95,7 @@ export default function DashboardOverview() {
         </Card>
       </div>
 
-      {/* Fallback chain */}
-      {providersData && (
+      {providersData && providersData.fallback_order.length > 0 && (
         <Card>
           <CardHeader>
             <CardTitle className="text-base">Fallback Chain</CardTitle>
@@ -107,20 +103,14 @@ export default function DashboardOverview() {
           <CardContent>
             <div className="flex flex-wrap items-center gap-2">
               {providersData.fallback_order.map((name, i) => {
-                const prov = providersData.providers.find((p) => p.name === name);
+                const prov = providersData.providers.find((p: ProviderItem) => p.name === name);
                 return (
                   <div key={name} className="flex items-center gap-2">
                     <div className="flex items-center gap-1.5 rounded-lg border px-3 py-1.5">
-                      <div
-                        className={`h-2 w-2 rounded-full ${
-                          prov?.configured ? "bg-green-500" : "bg-gray-300"
-                        }`}
-                      />
+                      <div className={`h-2 w-2 rounded-full ${prov?.configured ? "bg-green-500" : "bg-gray-300"}`} />
                       <span className="text-sm">{prov?.display_name || name}</span>
                       {prov?.is_primary && (
-                        <Badge variant="secondary" className="ml-1 text-xs">
-                          Primary
-                        </Badge>
+                        <Badge variant="secondary" className="ml-1 text-xs">Primary</Badge>
                       )}
                     </div>
                     {i < providersData.fallback_order.length - 1 && (

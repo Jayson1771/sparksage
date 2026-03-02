@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import asyncio
+import time
 import discord
 from discord.ext import commands
-from discord import app_commands
 import config
 import providers
 import db as database
@@ -12,29 +13,24 @@ intents.message_content = True
 
 bot = commands.Bot(command_prefix=config.BOT_PREFIX, intents=intents)
 
-MAX_HISTORY = 20
-
-
-async def get_history(channel_id: int) -> list[dict]:
-    """Get conversation history for a channel from the database."""
-    messages = await database.get_messages(str(channel_id), limit=MAX_HISTORY)
-    return [{"role": m["role"], "content": m["content"]} for m in messages]
-
-
-async def ask_ai(channel_id: int, user_name: str, message: str) -> tuple[str, str]:
-    """Send a message to AI and return (response, provider_name)."""
-    # Store user message in DB
-    await database.add_message(str(channel_id), "user", f"{user_name}: {message}")
-
-    history = await get_history(channel_id)
-
-    try:
-        response, provider_name = providers.chat(history, config.SYSTEM_PROMPT)
-        # Store assistant response in DB
-        await database.add_message(str(channel_id), "assistant", response, provider=provider_name)
-        return response, provider_name
-    except RuntimeError as e:
-        return f"Sorry, all AI providers failed:\n{e}", "none"
+COGS = [
+    "cogs.general",
+    "cogs.summarize",
+    "cogs.code_review",
+    "cogs.faq",
+    "cogs.onboarding",
+    "cogs.permissions",
+    "cogs.digest",
+    "cogs.moderation",
+    "cogs.translate",
+    "cogs.channel_prompts",
+    "cogs.channel_providers",
+    "cogs.analytics",
+    "cogs.quota",
+    "cogs.plugin_manager",
+    "cogs.cost_tracking",
+    "cogs.member_analytics",
+]
 
 
 def get_bot_status() -> dict:
@@ -55,7 +51,6 @@ def get_bot_status() -> dict:
 
 @bot.event
 async def on_ready():
-    # Initialize database when bot is ready
     await database.init_db()
     await database.sync_env_to_db()
 
@@ -79,76 +74,71 @@ async def on_message(message: discord.Message):
     if message.author == bot.user:
         return
 
-    # Respond when mentioned
     if bot.user in message.mentions:
         clean_content = message.content.replace(f"<@{bot.user.id}>", "").strip()
         if not clean_content:
             clean_content = "Hello!"
 
-        async with message.channel.typing():
-            response, provider_name = await ask_ai(
-                message.channel.id, message.author.display_name, clean_content
-            )
+        # Check rate limit
+        from utils.rate_limiter import get_limiter
+        limiter = get_limiter()
+        allowed, reason = limiter.check(
+            user_id=str(message.author.id),
+            guild_id=str(message.guild.id) if message.guild else None
+        )
+        if not allowed:
+            await message.reply(f"⏳ **Rate limited:** {reason}", mention_author=False)
+            await bot.process_commands(message)
+            return
 
-        # Split long responses (Discord 2000 char limit)
+        start = time.time()
+        async with message.channel.typing():
+            cog = bot.cogs.get("General")
+            if cog:
+                response, provider_name = await cog._ask_ai(
+                    message.channel.id,
+                    message.author.display_name,
+                    clean_content,
+                    guild_id=str(message.guild.id) if message.guild else None
+                )
+            else:
+                response = "I'm not ready yet. Please try again in a moment."
+                provider_name = "none"
+
+        latency_ms = int((time.time() - start) * 1000)
+
+        # Track analytics
+        await database.add_analytics_event(
+            event_type="mention",
+            guild_id=str(message.guild.id) if message.guild else None,
+            channel_id=str(message.channel.id),
+            user_id=str(message.author.id),
+            provider=provider_name,
+            latency_ms=latency_ms,
+        )
+
         for i in range(0, len(response), 2000):
-            await message.reply(response[i : i + 2000])
+            await message.reply(response[i: i + 2000])
 
     await bot.process_commands(message)
 
 
-# --- Slash Commands ---
+# --- Cog Loader ---
 
 
-@bot.tree.command(name="ask", description="Ask SparkSage a question")
-@app_commands.describe(question="Your question for SparkSage")
-async def ask(interaction: discord.Interaction, question: str):
-    await interaction.response.defer()
-    response, provider_name = await ask_ai(
-        interaction.channel_id, interaction.user.display_name, question
-    )
-    provider_label = config.PROVIDERS.get(provider_name, {}).get("name", provider_name)
-    footer = f"\n-# Powered by {provider_label}"
-
-    for i in range(0, len(response), 1900):
-        chunk = response[i : i + 1900]
-        if i + 1900 >= len(response):
-            chunk += footer
-        await interaction.followup.send(chunk)
+async def load_cogs():
+    for cog in COGS:
+        try:
+            await bot.load_extension(cog)
+            print(f"Loaded cog: {cog}")
+        except Exception as e:
+            print(f"Failed to load cog {cog}: {e}")
 
 
-@bot.tree.command(name="clear", description="Clear SparkSage's conversation memory for this channel")
-async def clear(interaction: discord.Interaction):
-    await database.clear_messages(str(interaction.channel_id))
-    await interaction.response.send_message("Conversation history cleared!")
-
-
-@bot.tree.command(name="summarize", description="Summarize the recent conversation in this channel")
-async def summarize(interaction: discord.Interaction):
-    await interaction.response.defer()
-    history = await get_history(interaction.channel_id)
-    if not history:
-        await interaction.followup.send("No conversation history to summarize.")
-        return
-
-    summary_prompt = "Please summarize the key points from this conversation so far in a concise bullet-point format."
-    response, provider_name = await ask_ai(
-        interaction.channel_id, interaction.user.display_name, summary_prompt
-    )
-    await interaction.followup.send(f"**Conversation Summary:**\n{response}")
-
-
-@bot.tree.command(name="provider", description="Show which AI provider SparkSage is currently using")
-async def provider(interaction: discord.Interaction):
-    primary = config.AI_PROVIDER
-    provider_info = config.PROVIDERS.get(primary, {})
-    available = providers.get_available_providers()
-
-    msg = f"**Current Provider:** {provider_info.get('name', primary)}\n"
-    msg += f"**Model:** `{provider_info.get('model', '?')}`\n"
-    msg += f"**Free:** {'Yes' if provider_info.get('free') else 'No (paid)'}\n"
-    msg += f"**Fallback Chain:** {' -> '.join(available)}"
-    await interaction.response.send_message(msg)
+async def start():
+    async with bot:
+        await load_cogs()
+        await bot.start(config.DISCORD_TOKEN)
 
 
 # --- Run ---
@@ -156,16 +146,15 @@ async def provider(interaction: discord.Interaction):
 
 def main():
     if not config.DISCORD_TOKEN:
-        print("Error: DISCORD_TOKEN not set. Copy .env.example to .env and fill in your tokens.")
+        print("Error: DISCORD_TOKEN not set.")
         return
 
     available = providers.get_available_providers()
     if not available:
-        print("Error: No AI providers configured. Add at least one API key to .env")
-        print("Free options: GEMINI_API_KEY, GROQ_API_KEY, or OPENROUTER_API_KEY")
+        print("Error: No AI providers configured. Add at least one API key.")
         return
 
-    bot.run(config.DISCORD_TOKEN)
+    asyncio.run(start())
 
 
 if __name__ == "__main__":

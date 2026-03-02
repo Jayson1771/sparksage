@@ -67,7 +67,6 @@ def test_provider(name: str) -> dict:
 
     client = _clients.get(name)
     if not client:
-        # Try creating a fresh client in case config was just updated
         client = _create_client(name)
         if not client:
             return {"success": False, "latency_ms": 0, "error": "No API key configured"}
@@ -118,3 +117,28 @@ def chat(messages: list[dict], system_prompt: str) -> tuple[str, str]:
 
     error_details = "\n".join(errors)
     raise RuntimeError(f"All providers failed:\n{error_details}")
+
+
+def chat_with_provider(messages: list[dict], system_prompt: str, provider_name: str) -> tuple[str, str]:
+    """Send messages to a specific provider, falling back to default chain if it fails."""
+    client = _clients.get(provider_name)
+    if not client:
+        return chat(messages, system_prompt)
+
+    provider = config.PROVIDERS.get(provider_name)
+    if not provider:
+        return chat(messages, system_prompt)
+
+    try:
+        response = client.chat.completions.create(
+            model=provider["model"],
+            max_tokens=config.MAX_TOKENS,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                *messages,
+            ],
+        )
+        return response.choices[0].message.content, provider_name
+    except Exception as e:
+        print(f"Channel provider {provider_name} failed: {e}. Falling back.")
+        return chat(messages, system_prompt)

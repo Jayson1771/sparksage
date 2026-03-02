@@ -3,7 +3,9 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from api.routes import auth, config, providers, bot, conversations, wizard
 import db
-
+from api.routes.api_analytics_router import router as analytics_router
+from api.routes.member_analytics_router import router as members_router
+from api.routes.config import router as config_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -32,8 +34,9 @@ def create_app() -> FastAPI:
     app.include_router(providers.router, prefix="/api/providers", tags=["providers"])
     app.include_router(bot.router, prefix="/api/bot", tags=["bot"])
     app.include_router(conversations.router, prefix="/api/conversations", tags=["conversations"])
+    app.include_router(analytics_router)
     app.include_router(wizard.router, prefix="/api/wizard", tags=["wizard"])
-
+    app.include_router(members_router)
     @app.get("/api/health")
     async def health():
         return {"status": "ok"}

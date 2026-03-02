@@ -125,3 +125,15 @@ def reload_from_db(db_config: dict[str, str]):
             setattr(config, key, converter(db_config[key]))
 
     config.PROVIDERS = config._build_providers()
+
+
+# Provider pricing per 1M tokens (input, output) in USD
+PROVIDER_PRICING: dict[str, dict[str, float]] = {
+    "gemini":     {"input_per_1m": 0.0,  "output_per_1m": 0.0,  "free": True},
+    "groq":       {"input_per_1m": 0.0,  "output_per_1m": 0.0,  "free": True},
+    "openrouter": {"input_per_1m": 0.0,  "output_per_1m": 0.0,  "free": True},
+    "anthropic":  {"input_per_1m": 3.00, "output_per_1m": 15.00, "free": False},
+    "openai":     {"input_per_1m": 2.50, "output_per_1m": 10.00, "free": False},
+}
+
+COST_ALERT_THRESHOLD: float = float(os.getenv("COST_ALERT_THRESHOLD", "10.0"))

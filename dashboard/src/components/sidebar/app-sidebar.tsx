@@ -1,8 +1,11 @@
+
 "use client";
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { signOut } from "next-auth/react";
+import { useTheme } from "next-themes";
+import { useEffect, useState } from "react";
 import {
   Zap,
   LayoutDashboard,
@@ -11,6 +14,9 @@ import {
   MessageSquare,
   Wand2,
   LogOut,
+  Sun,
+  Moon,
+  Users,
 } from "lucide-react";
 import {
   Sidebar,
@@ -31,7 +37,26 @@ const NAV_ITEMS = [
   { title: "Providers", href: "/dashboard/providers", icon: Cpu },
   { title: "Settings", href: "/dashboard/settings", icon: Settings },
   { title: "Conversations", href: "/dashboard/conversations", icon: MessageSquare },
+  { title: "Analytics", href: "/dashboard/analytics", icon: MessageSquare },
+  // { title: "Members", href: "/dashboard/members", icon: Users },
 ];
+const NEXT_PUBLIC_GUILD_ID="1134790867374410804";
+function ThemeToggle() {
+  const { theme, setTheme } = useTheme();
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+  if (!mounted) return null;
+
+  return (
+    <button
+      onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+      className="flex items-center justify-center w-7 h-7 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+      aria-label="Toggle theme"
+    >
+      {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+    </button>
+  );
+}
 
 export function AppSidebar() {
   const pathname = usePathname();
@@ -39,11 +64,14 @@ export function AppSidebar() {
   return (
     <Sidebar>
       <SidebarHeader>
-        <div className="flex items-center gap-2 px-2 py-1">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-primary-foreground">
-            <Zap className="h-4 w-4" />
+        <div className="flex items-center justify-between px-2 py-1">
+          <div className="flex items-center gap-2">
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-primary-foreground">
+              <Zap className="h-4 w-4" />
+            </div>
+            <span className="font-semibold">SparkSage</span>
           </div>
-          <span className="font-semibold">SparkSage</span>
+          <ThemeToggle />
         </div>
       </SidebarHeader>
       <SidebarContent>
