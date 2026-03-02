@@ -1,4 +1,3 @@
-
 "use client";
 
 import Link from "next/link";
@@ -17,6 +16,8 @@ import {
   Sun,
   Moon,
   Users,
+  BarChart2,
+  ContactRound,
 } from "lucide-react";
 import {
   Sidebar,
@@ -37,10 +38,11 @@ const NAV_ITEMS = [
   { title: "Providers", href: "/dashboard/providers", icon: Cpu },
   { title: "Settings", href: "/dashboard/settings", icon: Settings },
   { title: "Conversations", href: "/dashboard/conversations", icon: MessageSquare },
-  { title: "Analytics", href: "/dashboard/analytics", icon: MessageSquare },
+  { title: "Analytics", href: "/dashboard/analytics", icon: BarChart2 },
   // { title: "Members", href: "/dashboard/members", icon: Users },
+  { title: "CRM", href: "/dashboard/crm", icon: ContactRound },
 ];
-const NEXT_PUBLIC_GUILD_ID="1134790867374410804";
+
 function ThemeToggle() {
   const { theme, setTheme } = useTheme();
   const [mounted, setMounted] = useState(false);
@@ -62,7 +64,7 @@ export function AppSidebar() {
   const pathname = usePathname();
 
   return (
-    <Sidebar>
+    <Sidebar collapsible="offcanvas">
       <SidebarHeader>
         <div className="flex items-center justify-between px-2 py-1">
           <div className="flex items-center gap-2">
@@ -74,6 +76,7 @@ export function AppSidebar() {
           <ThemeToggle />
         </div>
       </SidebarHeader>
+
       <SidebarContent>
         <SidebarGroup>
           <SidebarGroupLabel>Dashboard</SidebarGroupLabel>
@@ -92,6 +95,7 @@ export function AppSidebar() {
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
+
         <SidebarGroup>
           <SidebarGroupLabel>Tools</SidebarGroupLabel>
           <SidebarGroupContent>
@@ -108,6 +112,7 @@ export function AppSidebar() {
           </SidebarGroupContent>
         </SidebarGroup>
       </SidebarContent>
+
       <SidebarFooter>
         <Button
           variant="ghost"
