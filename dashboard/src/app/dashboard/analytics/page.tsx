@@ -181,10 +181,10 @@ export default function AnalyticsPage() {
                     ))}
                   </Pie>
                   <Tooltip
-                    formatter={(value: number | undefined, name: string) => [
-                    `${value ?? 0} requests`,
-                     name,
-                ]}
+                    formatter={(value: number | undefined, name: string | undefined) => [
+                      `${value ?? 0} requests`,
+                      name ?? "",
+        ]}
                   />
                 </PieChart>
               </ResponsiveContainer>
