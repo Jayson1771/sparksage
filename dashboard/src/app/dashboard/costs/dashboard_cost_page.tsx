@@ -223,7 +223,7 @@ export default function CostPage() {
                   tickFormatter={(v) => v === 0 ? "Free" : `$${v.toFixed(4)}`}
                 />
                 <Tooltip
-                  formatter={(v: number, name: string) => [formatCost(v), name]}
+                  formatter={(v: number | undefined, name: string | undefined) => [formatCost(v ?? 0), name ?? ""]}
                 />
                 <Bar dataKey="total_cost" name="Cost" radius={[4, 4, 0, 0]}>
                   {providerCosts.map((entry) => (
