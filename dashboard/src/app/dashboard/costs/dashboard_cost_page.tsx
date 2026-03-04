@@ -192,7 +192,7 @@ export default function CostPage() {
                   tick={{ fontSize: 12 }}
                   tickFormatter={(v) => v === 0 ? "$0" : `$${v.toFixed(4)}`}
                 />
-                <Tooltip formatter={(v: number) => formatCost(v)} />
+                <Tooltip formatter={(v: number | undefined) => formatCost(v ?? 0)} />
                 <Line
                   type="monotone"
                   dataKey="cost"
