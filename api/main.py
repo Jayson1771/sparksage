@@ -21,6 +21,7 @@ def create_app() -> FastAPI:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[
+            "https://sparksage-bmxj.vercel.app",
             "http://localhost:3000",
             "http://127.0.0.1:3000",
         ],
