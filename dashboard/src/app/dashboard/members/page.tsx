@@ -187,7 +187,7 @@ export default function MemberAnalyticsPage() {
                   <CartesianGrid strokeDasharray="3 3" />
                   <XAxis dataKey="label" tick={{ fontSize: 10 }} interval={2} />
                   <YAxis tick={{ fontSize: 11 }} />
-                  <Tooltip formatter={(v: number) => [`${v} messages`, "Activity"]} />
+                  <Tooltip formatter={(v: number | undefined) => [`${v ?? 0} messages`, "Activity"]} />
                   <Bar dataKey="messages" fill="#6366f1" radius={[3, 3, 0, 0]} name="Messages" />
                 </BarChart>
               </ResponsiveContainer>
