@@ -33,7 +33,6 @@ SUPPORTED_LANGUAGES = [
     ("Ukrainian", "ukrainian"), ("Urdu", "urdu"), ("Vietnamese", "vietnamese"),
 ]
 
-# Language flag emojis for display
 LANGUAGE_FLAGS = {
     "english": "🇬🇧", "spanish": "🇪🇸", "french": "🇫🇷", "german": "🇩🇪",
     "japanese": "🇯🇵", "korean": "🇰🇷", "chinese simplified": "🇨🇳",
@@ -48,11 +47,43 @@ LANGUAGE_FLAGS = {
 }
 
 
+# Context menu must be defined OUTSIDE the class
+@app_commands.context_menu(name="Translate to English")
+async def translate_to_english_ctx(interaction: discord.Interaction, message: discord.Message):
+    await interaction.response.defer(ephemeral=True)
+    if not message.content:
+        await interaction.followup.send("❌ This message has no text content.", ephemeral=True)
+        return
+    try:
+        cog: Translate = interaction.client.cogs.get("Translate")  # type: ignore
+        if not cog:
+            await interaction.followup.send("❌ Translate cog not loaded.", ephemeral=True)
+            return
+
+        detected_source, translation = await cog._translate(message.content, "english")
+        source_flag = LANGUAGE_FLAGS.get(detected_source.lower(), "🌐")
+
+        embed = discord.Embed(title="🇬🇧 Translated to English", color=discord.Color.blurple())
+        embed.add_field(
+            name=f"{source_flag} Original ({detected_source.capitalize()})",
+            value=message.content[:1000],
+            inline=False
+        )
+        embed.add_field(name="🇬🇧 English", value=translation[:1000], inline=False)
+        embed.set_footer(text=f"Requested by {interaction.user.display_name}")
+        await interaction.followup.send(embed=embed, ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"❌ Translation failed: {e}", ephemeral=True)
+
+
 class Translate(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        # Register the context menu with the bot's command tree
+        bot.tree.add_command(translate_to_english_ctx)
 
-    # --- Slash Command ---
+    async def cog_unload(self):
+        self.bot.tree.remove_command("Translate to English", type=discord.AppCommandType.message)
 
     @app_commands.command(name="translate", description="Translate text to another language")
     @app_commands.describe(
@@ -62,7 +93,7 @@ class Translate(commands.Cog):
     )
     @app_commands.choices(target=[
         app_commands.Choice(name=name, value=value)
-        for name, value in SUPPORTED_LANGUAGES[:25]  # Discord limits to 25 choices
+        for name, value in SUPPORTED_LANGUAGES[:25]
     ])
     async def translate(
         self,
@@ -103,7 +134,6 @@ class Translate(commands.Cog):
     async def translate_more(self, interaction: discord.Interaction, text: str):
         await interaction.response.defer()
         try:
-            # Translate to top 5 common languages
             targets = ["spanish", "french", "german", "japanese", "portuguese"]
             results = []
 
@@ -113,51 +143,15 @@ class Translate(commands.Cog):
                 target_display = next((n for n, v in SUPPORTED_LANGUAGES if v == target), target.capitalize())
                 results.append((flag, target_display, translation))
 
-            embed = discord.Embed(
-                title="🌐 Multi-Language Translation",
-                color=discord.Color.blurple()
-            )
+            embed = discord.Embed(title="🌐 Multi-Language Translation", color=discord.Color.blurple())
             embed.add_field(name="Original", value=text[:500], inline=False)
             for flag, lang, translation in results:
-                embed.add_field(
-                    name=f"{flag} {lang}",
-                    value=translation[:300],
-                    inline=True
-                )
+                embed.add_field(name=f"{flag} {lang}", value=translation[:300], inline=True)
 
             await interaction.followup.send(embed=embed)
         except Exception as e:
             print(f"Multi-translate error: {e}")
             await interaction.followup.send("❌ Translation failed. Please try again.")
-
-    # --- Context Menu (Right-click on message) ---
-
-    @app_commands.context_menu(name="Translate to English")
-    async def translate_to_english(self, interaction: discord.Interaction, message: discord.Message):
-        await interaction.response.defer(ephemeral=True)
-        if not message.content:
-            await interaction.followup.send("❌ This message has no text content.", ephemeral=True)
-            return
-        try:
-            detected_source, translation = await self._translate(message.content, "english")
-            source_flag = LANGUAGE_FLAGS.get(detected_source.lower(), "🌐")
-
-            embed = discord.Embed(
-                title="🇬🇧 Translated to English",
-                color=discord.Color.blurple()
-            )
-            embed.add_field(
-                name=f"{source_flag} Original ({detected_source.capitalize()})",
-                value=message.content[:1000],
-                inline=False
-            )
-            embed.add_field(name="🇬🇧 English", value=translation[:1000], inline=False)
-            embed.set_footer(text=f"Requested by {interaction.user.display_name}")
-            await interaction.followup.send(embed=embed, ephemeral=True)
-        except Exception as e:
-            await interaction.followup.send(f"❌ Translation failed: {e}", ephemeral=True)
-
-    # --- Auto-Translation ---
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -169,15 +163,12 @@ class Translate(commands.Cog):
         guild_id = str(message.guild.id)
         channel_id = str(message.channel.id)
 
-        # Check if this channel has auto-translation enabled
         target_lang = await database.get_auto_translate_channel(guild_id, channel_id)
         if not target_lang:
             return
 
         try:
             detected_source, translation = await self._translate(message.content, target_lang)
-
-            # Don't translate if already in target language
             if detected_source.lower() == target_lang.lower():
                 return
 
@@ -190,8 +181,6 @@ class Translate(commands.Cog):
             )
         except Exception as e:
             print(f"Auto-translate error: {e}")
-
-    # --- Admin Commands ---
 
     autotranslate_group = app_commands.Group(
         name="autotranslate",
@@ -254,13 +243,9 @@ class Translate(commands.Cog):
                 "❌ You need **Manage Server** permission.", ephemeral=True
             )
 
-    # --- Internal helpers ---
-
     async def _translate(self, text: str, target: str, source: str | None = None) -> tuple[str, str]:
-        """Translate text and return (detected_source_language, translated_text)."""
         loop = asyncio.get_event_loop()
 
-        # Detect source language if not provided
         if not source:
             detect_history = [{"role": "user", "content": text}]
             source = await loop.run_in_executor(

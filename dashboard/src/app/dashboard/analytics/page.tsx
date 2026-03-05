@@ -1,12 +1,12 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { useSession } from "next-auth/react";
 import {
   LineChart, Line, BarChart, Bar, PieChart, Pie, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer
 } from "recharts";
-import { Activity, MessageSquare, Zap, Server } from "lucide-react";
+import { Activity, MessageSquare, Zap, Server, RefreshCw } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { api } from "@/lib/api";
 
@@ -27,25 +27,50 @@ interface AnalyticsSummary {
   daily_history: { date: string; count: number }[];
 }
 
+const REFRESH_INTERVAL_MS = 3000;
+
 export default function AnalyticsPage() {
   const { data: session } = useSession();
   const [summary, setSummary] = useState<AnalyticsSummary | null>(null);
   const [loading, setLoading] = useState(true);
+  const [lastRefreshed, setLastRefreshed] = useState<Date | null>(null);
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
   const token = (session as { accessToken?: string })?.accessToken;
 
+  const fetchAnalytics = useCallback(
+    async (isInitial = false) => {
+      if (!token) return;
+      if (!isInitial) setIsRefreshing(true);
+      try {
+        const res = await fetch(
+          `${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}/api/analytics/summary`,
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+        const data = await res.json();
+        setSummary(data);
+        setLastRefreshed(new Date());
+      } catch {
+        // silently fail on background refreshes
+      } finally {
+        if (isInitial) setLoading(false);
+        setIsRefreshing(false);
+      }
+    },
+    [token]
+  );
+
+  // Initial load
+  useEffect(() => {
+    fetchAnalytics(true);
+  }, [fetchAnalytics]);
+
+  // Auto-refresh every 3 seconds
   useEffect(() => {
     if (!token) return;
-    fetch(`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}/api/analytics/summary`, {
-      headers: { Authorization: `Bearer ${token}` },
-    })
-      .then((r) => r.json())
-      .then((data) => {
-        setSummary(data);
-        setLoading(false);
-      })
-      .catch(() => setLoading(false));
-  }, [token]);
+    const interval = setInterval(() => fetchAnalytics(false), REFRESH_INTERVAL_MS);
+    return () => clearInterval(interval);
+  }, [token, fetchAnalytics]);
 
   if (loading) {
     return (
@@ -66,24 +91,36 @@ export default function AnalyticsPage() {
   const totalMessages = (summary.counts?.command || 0) + (summary.counts?.mention || 0);
   const totalCommands = summary.counts?.command || 0;
   const totalMentions = summary.counts?.mention || 0;
-  const totalFaqs = summary.counts?.faq || 0;
 
-  // Format provider distribution for pie chart
   const providerData = summary.provider_distribution?.map((p) => ({
     name: p.provider,
     value: p.count,
     color: PROVIDER_COLORS[p.provider] || "#9CA3AF",
   })) || [];
 
-  // Format daily history for line chart
   const dailyData = summary.daily_history?.map((d) => ({
-    date: d.date?.slice(5), // Show MM-DD
+    date: d.date?.slice(5),
     messages: d.count,
   })) || [];
 
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-bold">Analytics</h1>
+      {/* Header with refresh indicator */}
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl font-bold">Analytics</h1>
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <RefreshCw
+            className={`h-3.5 w-3.5 ${isRefreshing ? "animate-spin text-indigo-500" : ""}`}
+          />
+          <span>
+            {isRefreshing
+              ? "Refreshing..."
+              : lastRefreshed
+              ? `Updated ${lastRefreshed.toLocaleTimeString()}`
+              : ""}
+          </span>
+        </div>
+      </div>
 
       {/* Stats Cards */}
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
@@ -184,11 +221,10 @@ export default function AnalyticsPage() {
                     formatter={(value: number | undefined, name: string | undefined) => [
                       `${value ?? 0} requests`,
                       name ?? "",
-        ]}
+                    ]}
                   />
                 </PieChart>
               </ResponsiveContainer>
-              {/* Legend */}
               <div className="flex flex-wrap gap-2 mt-2 justify-center">
                 {providerData.map((p) => (
                   <div key={p.name} className="flex items-center gap-1 text-xs">
