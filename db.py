@@ -32,9 +32,14 @@ async def get_pg():
     global _pg_pool
     if _pg_pool is None:
         import asyncpg
-        # Railway DATABASE_URL uses postgres:// — asyncpg needs postgresql://
         url = DATABASE_URL.replace("postgres://", "postgresql://", 1)
-        _pg_pool = await asyncpg.create_pool(url, min_size=1, max_size=10)
+        _pg_pool = await asyncpg.create_pool(
+            url,
+            min_size=1,
+            max_size=10,
+            command_timeout=60,
+            statement_cache_size=0,  # avoids prepared statement conflicts
+        )
     return _pg_pool
 
 
@@ -58,29 +63,33 @@ async def execute(query: str, params: tuple = (), fetch: str = "none"):
             pg_query = pg_query.replace("?", f"${idx}", 1)
 
         # Convert SQLite-specific syntax to PostgreSQL
-        pg_query = pg_query.replace(
-            "INSERT OR IGNORE INTO", "INSERT INTO"
-        ).replace(
-            "INSERT OR REPLACE INTO", "INSERT INTO"
-        )
-        if "ON CONFLICT" not in pg_query and "INSERT OR IGNORE" in query:
+        pg_query = pg_query.replace("INSERT OR IGNORE INTO", "INSERT INTO")
+        pg_query = pg_query.replace("INSERT OR REPLACE INTO", "INSERT INTO")
+
+        # Add ON CONFLICT DO NOTHING for INSERT OR IGNORE
+        if "INSERT OR IGNORE" in query and "ON CONFLICT" not in pg_query:
             pg_query += " ON CONFLICT DO NOTHING"
 
         # Fix datetime functions
         pg_query = pg_query.replace("datetime('now')", "NOW()")
         pg_query = pg_query.replace("date(created_at)", "DATE(created_at)")
+        pg_query = pg_query.replace("datetime('now', 'start of month')", "date_trunc('month', NOW())")
 
         pool = await get_pg()
-        async with pool.acquire() as conn:
-            if fetch == "one":
-                row = await conn.fetchrow(pg_query, *params)
-                return Row(dict(row)) if row else None
-            elif fetch == "all":
-                rows = await conn.fetch(pg_query, *params)
-                return [Row(dict(r)) for r in rows]
-            else:
-                await conn.execute(pg_query, *params)
-                return None
+        try:
+            async with pool.acquire() as conn:
+                if fetch == "one":
+                    row = await conn.fetchrow(pg_query, *params)
+                    return Row(dict(row)) if row else None
+                elif fetch == "all":
+                    rows = await conn.fetch(pg_query, *params)
+                    return [Row(dict(r)) for r in rows]
+                else:
+                    await conn.execute(pg_query, *params)
+                    return None
+        except Exception as e:
+            print(f"[DB Error] {e}\nQuery: {pg_query}\nParams: {params}")
+            raise
     else:
         db = await get_db()
         cursor = await db.execute(query, params)
@@ -138,170 +147,67 @@ async def executescript(sql: str):
 
 async def init_db():
     """Create tables if they don't exist."""
-    schema = """
-        CREATE TABLE IF NOT EXISTS config (
-            key   TEXT PRIMARY KEY,
-            value TEXT NOT NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS conversations (
-            id         INTEGER PRIMARY KEY AUTOINCREMENT,
-            channel_id TEXT    NOT NULL,
-            role       TEXT    NOT NULL,
-            content    TEXT    NOT NULL,
-            provider   TEXT,
-            created_at TEXT    NOT NULL DEFAULT (datetime('now'))
-        );
-        CREATE INDEX IF NOT EXISTS idx_conv_channel ON conversations(channel_id);
-
-        CREATE TABLE IF NOT EXISTS sessions (
-            token      TEXT PRIMARY KEY,
-            user_id    TEXT NOT NULL,
-            created_at TEXT NOT NULL DEFAULT (datetime('now')),
-            expires_at TEXT NOT NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS wizard_state (
-            id           INTEGER PRIMARY KEY CHECK (id = 1),
-            completed    INTEGER NOT NULL DEFAULT 0,
-            current_step INTEGER NOT NULL DEFAULT 0,
-            data         TEXT    NOT NULL DEFAULT '{}'
-        );
-
-        CREATE TABLE IF NOT EXISTS faqs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            guild_id TEXT NOT NULL,
-            question TEXT NOT NULL,
-            answer TEXT NOT NULL,
-            match_keywords TEXT NOT NULL,
-            times_used INTEGER DEFAULT 0,
-            created_by TEXT,
-            created_at TEXT DEFAULT (datetime('now'))
-        );
-
-        CREATE TABLE IF NOT EXISTS onboarding_config (
-            guild_id TEXT NOT NULL,
-            key TEXT NOT NULL,
-            value TEXT NOT NULL,
-            PRIMARY KEY (guild_id, key)
-        );
-
-        CREATE TABLE IF NOT EXISTS command_permissions (
-            command_name TEXT NOT NULL,
-            guild_id TEXT NOT NULL,
-            role_id TEXT NOT NULL,
-            PRIMARY KEY (command_name, guild_id, role_id)
-        );
-
-        CREATE TABLE IF NOT EXISTS digest_config (
-            guild_id TEXT NOT NULL,
-            key TEXT NOT NULL,
-            value TEXT NOT NULL,
-            PRIMARY KEY (guild_id, key)
-        );
-
-        CREATE TABLE IF NOT EXISTS moderation_config (
-            guild_id TEXT NOT NULL,
-            key TEXT NOT NULL,
-            value TEXT NOT NULL,
-            PRIMARY KEY (guild_id, key)
-        );
-
-        CREATE TABLE IF NOT EXISTS moderation_logs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            guild_id TEXT NOT NULL,
-            channel_id TEXT NOT NULL,
-            message_id TEXT NOT NULL,
-            author_id TEXT NOT NULL,
-            content TEXT NOT NULL,
-            reason TEXT,
-            severity TEXT,
-            categories TEXT,
-            created_at TEXT DEFAULT (datetime('now'))
-        );
-
-        CREATE TABLE IF NOT EXISTS auto_translate_channels (
-            guild_id TEXT NOT NULL,
-            channel_id TEXT NOT NULL,
-            target_language TEXT NOT NULL,
-            PRIMARY KEY (guild_id, channel_id)
-        );
-
-        CREATE TABLE IF NOT EXISTS channel_prompts (
-            channel_id TEXT NOT NULL,
-            guild_id TEXT NOT NULL,
-            system_prompt TEXT NOT NULL,
-            PRIMARY KEY (guild_id, channel_id)
-        );
-
-        CREATE TABLE IF NOT EXISTS channel_providers (
-            guild_id TEXT NOT NULL,
-            channel_id TEXT NOT NULL,
-            provider_name TEXT NOT NULL,
-            PRIMARY KEY (guild_id, channel_id)
-        );
-
-        CREATE TABLE IF NOT EXISTS analytics (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            event_type TEXT NOT NULL,
-            guild_id TEXT,
-            channel_id TEXT,
-            user_id TEXT,
-            provider TEXT,
-            tokens_used INTEGER,
-            input_tokens INTEGER,
-            output_tokens INTEGER,
-            estimated_cost REAL DEFAULT 0.0,
-            latency_ms INTEGER,
-            created_at TEXT DEFAULT (datetime('now'))
-        );
-        CREATE INDEX IF NOT EXISTS idx_analytics_guild ON analytics(guild_id);
-        CREATE INDEX IF NOT EXISTS idx_analytics_created ON analytics(created_at);
-
-        CREATE TABLE IF NOT EXISTS enabled_plugins (
-            guild_id TEXT NOT NULL,
-            plugin_name TEXT NOT NULL,
-            PRIMARY KEY (guild_id, plugin_name)
-        );
-
-        CREATE TABLE IF NOT EXISTS trivia_scores (
-            guild_id TEXT NOT NULL,
-            user_id TEXT NOT NULL,
-            correct INTEGER DEFAULT 0,
-            wrong INTEGER DEFAULT 0,
-            PRIMARY KEY (guild_id, user_id)
-        );
-
-        CREATE TABLE IF NOT EXISTS member_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            guild_id TEXT NOT NULL,
-            user_id TEXT NOT NULL,
-            username TEXT NOT NULL,
-            event_type TEXT NOT NULL,
-            created_at TEXT DEFAULT (datetime('now'))
-        );
-
-        CREATE TABLE IF NOT EXISTS member_messages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            guild_id TEXT NOT NULL,
-            user_id TEXT NOT NULL,
-            username TEXT NOT NULL,
-            hour INTEGER NOT NULL,
-            created_at TEXT DEFAULT (datetime('now'))
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_member_events_guild ON member_events(guild_id);
-        CREATE INDEX IF NOT EXISTS idx_member_messages_guild ON member_messages(guild_id);
-
-        INSERT OR IGNORE INTO wizard_state (id) VALUES (1);
-    """
-    await executescript(schema)
     if USE_POSTGRES:
         pool = await get_pg()
         async with pool.acquire() as conn:
-            await conn.execute("INSERT INTO wizard_state (id) VALUES (1) ON CONFLICT DO NOTHING")
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS conversations (id SERIAL PRIMARY KEY, channel_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, provider TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+                CREATE INDEX IF NOT EXISTS idx_conv_channel ON conversations(channel_id);
+                CREATE TABLE IF NOT EXISTS sessions (token TEXT PRIMARY KEY, user_id TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), expires_at TIMESTAMPTZ NOT NULL);
+                CREATE TABLE IF NOT EXISTS wizard_state (id INTEGER PRIMARY KEY CHECK (id = 1), completed INTEGER NOT NULL DEFAULT 0, current_step INTEGER NOT NULL DEFAULT 0, data TEXT NOT NULL DEFAULT '{}');
+                CREATE TABLE IF NOT EXISTS faqs (id SERIAL PRIMARY KEY, guild_id TEXT NOT NULL, question TEXT NOT NULL, answer TEXT NOT NULL, match_keywords TEXT NOT NULL, times_used INTEGER DEFAULT 0, created_by TEXT, created_at TIMESTAMPTZ DEFAULT NOW());
+                CREATE TABLE IF NOT EXISTS onboarding_config (guild_id TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY (guild_id, key));
+                CREATE TABLE IF NOT EXISTS command_permissions (command_name TEXT NOT NULL, guild_id TEXT NOT NULL, role_id TEXT NOT NULL, PRIMARY KEY (command_name, guild_id, role_id));
+                CREATE TABLE IF NOT EXISTS digest_config (guild_id TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY (guild_id, key));
+                CREATE TABLE IF NOT EXISTS moderation_config (guild_id TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY (guild_id, key));
+                CREATE TABLE IF NOT EXISTS moderation_logs (id SERIAL PRIMARY KEY, guild_id TEXT NOT NULL, channel_id TEXT NOT NULL, message_id TEXT NOT NULL, author_id TEXT NOT NULL, content TEXT NOT NULL, reason TEXT, severity TEXT, categories TEXT, created_at TIMESTAMPTZ DEFAULT NOW());
+                CREATE TABLE IF NOT EXISTS auto_translate_channels (guild_id TEXT NOT NULL, channel_id TEXT NOT NULL, target_language TEXT NOT NULL, PRIMARY KEY (guild_id, channel_id));
+                CREATE TABLE IF NOT EXISTS channel_prompts (guild_id TEXT NOT NULL, channel_id TEXT NOT NULL, system_prompt TEXT NOT NULL, PRIMARY KEY (guild_id, channel_id));
+                CREATE TABLE IF NOT EXISTS channel_providers (guild_id TEXT NOT NULL, channel_id TEXT NOT NULL, provider_name TEXT NOT NULL, PRIMARY KEY (guild_id, channel_id));
+                CREATE TABLE IF NOT EXISTS analytics (id SERIAL PRIMARY KEY, event_type TEXT NOT NULL, guild_id TEXT, channel_id TEXT, user_id TEXT, provider TEXT, tokens_used INTEGER, input_tokens INTEGER, output_tokens INTEGER, estimated_cost REAL DEFAULT 0.0, latency_ms INTEGER, created_at TIMESTAMPTZ DEFAULT NOW());
+                CREATE INDEX IF NOT EXISTS idx_analytics_guild ON analytics(guild_id);
+                CREATE INDEX IF NOT EXISTS idx_analytics_created ON analytics(created_at);
+                CREATE TABLE IF NOT EXISTS enabled_plugins (guild_id TEXT NOT NULL, plugin_name TEXT NOT NULL, PRIMARY KEY (guild_id, plugin_name));
+                CREATE TABLE IF NOT EXISTS trivia_scores (guild_id TEXT NOT NULL, user_id TEXT NOT NULL, correct INTEGER DEFAULT 0, wrong INTEGER DEFAULT 0, PRIMARY KEY (guild_id, user_id));
+                CREATE TABLE IF NOT EXISTS member_events (id SERIAL PRIMARY KEY, guild_id TEXT NOT NULL, user_id TEXT NOT NULL, username TEXT NOT NULL, event_type TEXT NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW());
+                CREATE TABLE IF NOT EXISTS member_messages (id SERIAL PRIMARY KEY, guild_id TEXT NOT NULL, user_id TEXT NOT NULL, username TEXT NOT NULL, hour INTEGER NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW());
+                CREATE INDEX IF NOT EXISTS idx_member_events_guild ON member_events(guild_id);
+                CREATE INDEX IF NOT EXISTS idx_member_messages_guild ON member_messages(guild_id);
+                INSERT INTO wizard_state (id) VALUES (1) ON CONFLICT DO NOTHING;
+            """)
+    else:
+        db = await get_db()
+        await db.executescript("""
+            CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS conversations (id INTEGER PRIMARY KEY AUTOINCREMENT, channel_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, provider TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')));
+            CREATE INDEX IF NOT EXISTS idx_conv_channel ON conversations(channel_id);
+            CREATE TABLE IF NOT EXISTS sessions (token TEXT PRIMARY KEY, user_id TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')), expires_at TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS wizard_state (id INTEGER PRIMARY KEY CHECK (id = 1), completed INTEGER NOT NULL DEFAULT 0, current_step INTEGER NOT NULL DEFAULT 0, data TEXT NOT NULL DEFAULT '{}');
+            CREATE TABLE IF NOT EXISTS faqs (id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id TEXT NOT NULL, question TEXT NOT NULL, answer TEXT NOT NULL, match_keywords TEXT NOT NULL, times_used INTEGER DEFAULT 0, created_by TEXT, created_at TEXT DEFAULT (datetime('now')));
+            CREATE TABLE IF NOT EXISTS onboarding_config (guild_id TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY (guild_id, key));
+            CREATE TABLE IF NOT EXISTS command_permissions (command_name TEXT NOT NULL, guild_id TEXT NOT NULL, role_id TEXT NOT NULL, PRIMARY KEY (command_name, guild_id, role_id));
+            CREATE TABLE IF NOT EXISTS digest_config (guild_id TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY (guild_id, key));
+            CREATE TABLE IF NOT EXISTS moderation_config (guild_id TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY (guild_id, key));
+            CREATE TABLE IF NOT EXISTS moderation_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id TEXT NOT NULL, channel_id TEXT NOT NULL, message_id TEXT NOT NULL, author_id TEXT NOT NULL, content TEXT NOT NULL, reason TEXT, severity TEXT, categories TEXT, created_at TEXT DEFAULT (datetime('now')));
+            CREATE TABLE IF NOT EXISTS auto_translate_channels (guild_id TEXT NOT NULL, channel_id TEXT NOT NULL, target_language TEXT NOT NULL, PRIMARY KEY (guild_id, channel_id));
+            CREATE TABLE IF NOT EXISTS channel_prompts (channel_id TEXT NOT NULL, guild_id TEXT NOT NULL, system_prompt TEXT NOT NULL, PRIMARY KEY (guild_id, channel_id));
+            CREATE TABLE IF NOT EXISTS channel_providers (guild_id TEXT NOT NULL, channel_id TEXT NOT NULL, provider_name TEXT NOT NULL, PRIMARY KEY (guild_id, channel_id));
+            CREATE TABLE IF NOT EXISTS analytics (id INTEGER PRIMARY KEY AUTOINCREMENT, event_type TEXT NOT NULL, guild_id TEXT, channel_id TEXT, user_id TEXT, provider TEXT, tokens_used INTEGER, input_tokens INTEGER, output_tokens INTEGER, estimated_cost REAL DEFAULT 0.0, latency_ms INTEGER, created_at TEXT DEFAULT (datetime('now')));
+            CREATE INDEX IF NOT EXISTS idx_analytics_guild ON analytics(guild_id);
+            CREATE INDEX IF NOT EXISTS idx_analytics_created ON analytics(created_at);
+            CREATE TABLE IF NOT EXISTS enabled_plugins (guild_id TEXT NOT NULL, plugin_name TEXT NOT NULL, PRIMARY KEY (guild_id, plugin_name));
+            CREATE TABLE IF NOT EXISTS trivia_scores (guild_id TEXT NOT NULL, user_id TEXT NOT NULL, correct INTEGER DEFAULT 0, wrong INTEGER DEFAULT 0, PRIMARY KEY (guild_id, user_id));
+            CREATE TABLE IF NOT EXISTS member_events (id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id TEXT NOT NULL, user_id TEXT NOT NULL, username TEXT NOT NULL, event_type TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')));
+            CREATE TABLE IF NOT EXISTS member_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id TEXT NOT NULL, user_id TEXT NOT NULL, username TEXT NOT NULL, hour INTEGER NOT NULL, created_at TEXT DEFAULT (datetime('now')));
+            CREATE INDEX IF NOT EXISTS idx_member_events_guild ON member_events(guild_id);
+            CREATE INDEX IF NOT EXISTS idx_member_messages_guild ON member_messages(guild_id);
+            INSERT OR IGNORE INTO wizard_state (id) VALUES (1);
+        """)
+        await db.commit()
 
-
+async def init_member_analytics_tables():
+    pass
 async def init_member_analytics_tables():
     """Already included in init_db, this is kept for backwards compatibility."""
     pass
