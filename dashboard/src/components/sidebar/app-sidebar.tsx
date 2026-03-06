@@ -6,31 +6,14 @@ import { signOut } from "next-auth/react";
 import { useTheme } from "next-themes";
 import { useEffect, useState } from "react";
 import {
-  Zap,
-  LayoutDashboard,
-  Cpu,
-  Settings,
-  MessageSquare,
-  Wand2,
-  LogOut,
-  Sun,
-  Moon,
-  Users,
-  BarChart2,
-  ContactRound,
-  DollarSign,
+  Zap, LayoutDashboard, Cpu, Settings, MessageSquare, Wand2, LogOut,
+  Sun, Moon, Users, BarChart2, ContactRound, DollarSign,
+  Hash, BookOpen, Gauge, HelpCircle, Shield, Swords, Puzzle, CalendarClock,
 } from "lucide-react";
 import {
-  Sidebar,
-  SidebarContent,
-  SidebarFooter,
-  SidebarGroup,
-  SidebarGroupContent,
-  SidebarGroupLabel,
-  SidebarHeader,
-  SidebarMenu,
-  SidebarMenuButton,
-  SidebarMenuItem,
+  Sidebar, SidebarContent, SidebarFooter, SidebarGroup,
+  SidebarGroupContent, SidebarGroupLabel, SidebarHeader,
+  SidebarMenu, SidebarMenuButton, SidebarMenuItem,
 } from "@/components/ui/sidebar";
 import { Button } from "@/components/ui/button";
 
@@ -42,8 +25,18 @@ const NAV_ITEMS = [
   { title: "Analytics", href: "/dashboard/analytics", icon: BarChart2 },
   { title: "Members", href: "/dashboard/members", icon: Users },
   { title: "Cost", href: "/dashboard/costs", icon: DollarSign },
-  
   // { title: "CRM", href: "/dashboard/crm", icon: ContactRound },
+];
+
+const MANAGE_ITEMS = [
+  { title: "Channel Prompts", href: "/dashboard/channel-prompts", icon: Hash },
+  { title: "Onboarding", href: "/dashboard/onboarding", icon: BookOpen },
+  { title: "Rate Limits", href: "/dashboard/rate-limits", icon: Gauge },
+  { title: "FAQ", href: "/dashboard/faq", icon: HelpCircle },
+  { title: "Permissions", href: "/dashboard/permissions", icon: Shield },
+  { title: "Moderation", href: "/dashboard/moderation", icon: Swords },
+  { title: "Plugins", href: "/dashboard/plugins", icon: Puzzle },
+  { title: "Daily Digest", href: "/dashboard/daily-digest", icon: CalendarClock },
 ];
 
 function ThemeToggle() {
@@ -86,6 +79,24 @@ export function AppSidebar() {
           <SidebarGroupContent>
             <SidebarMenu>
               {NAV_ITEMS.map((item) => (
+                <SidebarMenuItem key={item.href}>
+                  <SidebarMenuButton asChild isActive={pathname === item.href}>
+                    <Link href={item.href}>
+                      <item.icon className="h-4 w-4" />
+                      <span>{item.title}</span>
+                    </Link>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              ))}
+            </SidebarMenu>
+          </SidebarGroupContent>
+        </SidebarGroup>
+
+        <SidebarGroup>
+          <SidebarGroupLabel>Manage</SidebarGroupLabel>
+          <SidebarGroupContent>
+            <SidebarMenu>
+              {MANAGE_ITEMS.map((item) => (
                 <SidebarMenuItem key={item.href}>
                   <SidebarMenuButton asChild isActive={pathname === item.href}>
                     <Link href={item.href}>

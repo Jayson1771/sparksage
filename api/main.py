@@ -6,6 +6,7 @@ import db
 from api.routes.api_analytics_router import router as analytics_router
 from api.routes.member_analytics_router import router as members_router
 from api.routes.config import router as config_router
+from api.routes.manage_router import router as manage_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -14,10 +15,8 @@ async def lifespan(app: FastAPI):
     yield
     await db.close_db()
 
-
 def create_app() -> FastAPI:
     app = FastAPI(title="SparkSage API", version="1.0.0", lifespan=lifespan)
-
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[
@@ -29,7 +28,6 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
-
     app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
     app.include_router(config.router, prefix="/api/config", tags=["config"])
     app.include_router(providers.router, prefix="/api/providers", tags=["providers"])
@@ -38,6 +36,8 @@ def create_app() -> FastAPI:
     app.include_router(analytics_router)
     app.include_router(wizard.router, prefix="/api/wizard", tags=["wizard"])
     app.include_router(members_router)
+    app.include_router(manage_router)
+
     @app.get("/api/health")
     async def health():
         return {"status": "ok"}
