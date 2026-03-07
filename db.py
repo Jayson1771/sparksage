@@ -70,10 +70,16 @@ async def execute(query: str, params: tuple = (), fetch: str = "none"):
         if "INSERT OR IGNORE" in query and "ON CONFLICT" not in pg_query:
             pg_query += " ON CONFLICT DO NOTHING"
 
-        # Fix datetime functions
+        # Fix datetime functions — order matters (longest patterns first)
+        pg_query = pg_query.replace("datetime('now', 'start of month')", "date_trunc('month', NOW())")
+        pg_query = pg_query.replace("datetime('now', '-30 days')", "(NOW() - INTERVAL '30 days')")
+        pg_query = pg_query.replace("datetime('now', '-7 days')", "(NOW() - INTERVAL '7 days')")
         pg_query = pg_query.replace("datetime('now')", "NOW()")
         pg_query = pg_query.replace("date(created_at)", "DATE(created_at)")
-        pg_query = pg_query.replace("datetime('now', 'start of month')", "date_trunc('month', NOW())")
+        # Convert dynamic datetime('now', $N) -> (NOW() + $N::interval)
+        # This handles queries like: WHERE created_at >= datetime('now', ?) with param '-30 days'
+        import re as _re
+        pg_query = _re.sub(r"datetime\('now',\s*(\$\d+)\)", r"(NOW() + ::interval)", pg_query)
 
         pool = await get_pg()
         try:
