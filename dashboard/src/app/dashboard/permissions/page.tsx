@@ -176,29 +176,6 @@ export default function PermissionsPage() {
           </div>
         </CardContent>
       </Card>
-
-      <Card>
-        <CardHeader><CardTitle className="text-base">Blocked Users</CardTitle></CardHeader>
-        <CardContent className="space-y-3">
-          <div className="flex gap-2">
-            <Input placeholder="User ID to block from using the bot" value={newBlockedUser} onChange={e => setNewBlockedUser(e.target.value)}
-              onKeyDown={e => { if (e.key === "Enter" && newBlockedUser) { setConfig(c => ({ ...c, blocked_users: [...c.blocked_users, newBlockedUser] })); setNewBlockedUser(""); }}} />
-            <Button variant="outline" onClick={() => { if (newBlockedUser) { setConfig(c => ({ ...c, blocked_users: [...c.blocked_users, newBlockedUser] })); setNewBlockedUser(""); }}}>
-              <Plus className="h-4 w-4" />
-            </Button>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            {config.blocked_users.length === 0
-              ? <p className="text-xs text-muted-foreground">No blocked users.</p>
-              : config.blocked_users.map((u, i) => (
-                <Badge key={i} variant="destructive" className="gap-1">{u}
-                  <button onClick={() => setConfig(c => ({ ...c, blocked_users: c.blocked_users.filter((_, idx) => idx !== i) }))}>×</button>
-                </Badge>
-              ))}
-          </div>
-        </CardContent>
-      </Card>
-
       <Card>
         <CardHeader><CardTitle className="text-base">Discord Commands</CardTitle></CardHeader>
         <CardContent className="space-y-1.5">
