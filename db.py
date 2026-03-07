@@ -75,16 +75,17 @@ async def execute(query: str, params: tuple = (), fetch: str = "none"):
         if "INSERT OR IGNORE" in query and "ON CONFLICT" not in pg_query:
             pg_query += " ON CONFLICT DO NOTHING"
 
-        # Fix datetime functions — order matters (longest patterns first)
+        # Fix SQLite datetime -> PostgreSQL equivalents
+        import re as _re
         pg_query = pg_query.replace("datetime('now', 'start of month')", "date_trunc('month', NOW())")
         pg_query = pg_query.replace("datetime('now', '-30 days')", "(NOW() - INTERVAL '30 days')")
         pg_query = pg_query.replace("datetime('now', '-7 days')", "(NOW() - INTERVAL '7 days')")
         pg_query = pg_query.replace("datetime('now')", "NOW()")
         pg_query = pg_query.replace("date(created_at)", "DATE(created_at)")
-        # Convert dynamic datetime('now', $N) -> (NOW() + $N::interval)
-        # This handles queries like: WHERE created_at >= datetime('now', ?) with param '-30 days'
-        import re as _re
-        pg_query = _re.sub(r"datetime\('now',\s*(\$\d+)\)", r"(NOW() + ::interval)", pg_query)
+        # dynamic datetime('now', $N) - param is like '-30 days'
+        pg_query = _re.sub(r"datetime\('now',\s*(\$\d+)\)", r"(NOW() + CAST(\1 AS interval))", pg_query)
+        # Fix text/timestamptz comparison for sessions
+        pg_query = pg_query.replace("expires_at > NOW()", "expires_at::timestamptz > NOW()")
 
         pool = await get_pg()
         try:
@@ -141,7 +142,7 @@ async def executescript(sql: str):
             for stmt in statements:
                 # Convert SQLite-specific syntax
                 stmt = stmt.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
-                stmt = stmt.replace("datetime('now')", "NOW()")
+                stmt = stmt.replace("NOW()", "NOW()")
                 stmt = stmt.replace("INSERT OR IGNORE INTO", "INSERT INTO")
                 try:
                     await conn.execute(stmt)
@@ -160,40 +161,62 @@ async def init_db():
     """Create tables if they don't exist."""
     if USE_POSTGRES:
         import asyncpg
-        # Use a fresh direct connection for init — never use the shared pool here
-        # because init_db may be called from a different event loop (uvicorn lifespan)
         url = DATABASE_URL.replace("postgres://", "postgresql://", 1)
         conn = await asyncpg.connect(url)
         try:
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-                CREATE TABLE IF NOT EXISTS conversations (id SERIAL PRIMARY KEY, channel_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, provider TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
-                CREATE INDEX IF NOT EXISTS idx_conv_channel ON conversations(channel_id);
-                CREATE TABLE IF NOT EXISTS sessions (token TEXT PRIMARY KEY, user_id TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), expires_at TIMESTAMPTZ NOT NULL);
-                CREATE TABLE IF NOT EXISTS wizard_state (id INTEGER PRIMARY KEY CHECK (id = 1), completed INTEGER NOT NULL DEFAULT 0, current_step INTEGER NOT NULL DEFAULT 0, data TEXT NOT NULL DEFAULT '{}');
-                CREATE TABLE IF NOT EXISTS faqs (id SERIAL PRIMARY KEY, guild_id TEXT NOT NULL, question TEXT NOT NULL, answer TEXT NOT NULL, match_keywords TEXT NOT NULL, times_used INTEGER DEFAULT 0, created_by TEXT, created_at TIMESTAMPTZ DEFAULT NOW());
-                CREATE TABLE IF NOT EXISTS onboarding_config (guild_id TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY (guild_id, key));
-                CREATE TABLE IF NOT EXISTS command_permissions (command_name TEXT NOT NULL, guild_id TEXT NOT NULL, role_id TEXT NOT NULL, PRIMARY KEY (command_name, guild_id, role_id));
-                CREATE TABLE IF NOT EXISTS digest_config (guild_id TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY (guild_id, key));
-                CREATE TABLE IF NOT EXISTS moderation_config (guild_id TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY (guild_id, key));
-                CREATE TABLE IF NOT EXISTS moderation_logs (id SERIAL PRIMARY KEY, guild_id TEXT NOT NULL, channel_id TEXT NOT NULL, message_id TEXT NOT NULL, author_id TEXT NOT NULL, content TEXT NOT NULL, reason TEXT, severity TEXT, categories TEXT, created_at TIMESTAMPTZ DEFAULT NOW());
-                CREATE TABLE IF NOT EXISTS auto_translate_channels (guild_id TEXT NOT NULL, channel_id TEXT NOT NULL, target_language TEXT NOT NULL, PRIMARY KEY (guild_id, channel_id));
-                CREATE TABLE IF NOT EXISTS channel_prompts (guild_id TEXT NOT NULL, channel_id TEXT NOT NULL, system_prompt TEXT NOT NULL, PRIMARY KEY (guild_id, channel_id));
-                CREATE TABLE IF NOT EXISTS channel_providers (guild_id TEXT NOT NULL, channel_id TEXT NOT NULL, provider_name TEXT NOT NULL, PRIMARY KEY (guild_id, channel_id));
-                CREATE TABLE IF NOT EXISTS analytics (id SERIAL PRIMARY KEY, event_type TEXT NOT NULL, guild_id TEXT, channel_id TEXT, user_id TEXT, provider TEXT, tokens_used INTEGER, input_tokens INTEGER, output_tokens INTEGER, estimated_cost REAL DEFAULT 0.0, latency_ms INTEGER, created_at TIMESTAMPTZ DEFAULT NOW());
-                CREATE INDEX IF NOT EXISTS idx_analytics_guild ON analytics(guild_id);
-                CREATE INDEX IF NOT EXISTS idx_analytics_created ON analytics(created_at);
-                CREATE TABLE IF NOT EXISTS enabled_plugins (guild_id TEXT NOT NULL, plugin_name TEXT NOT NULL, PRIMARY KEY (guild_id, plugin_name));
-                CREATE TABLE IF NOT EXISTS trivia_scores (guild_id TEXT NOT NULL, user_id TEXT NOT NULL, correct INTEGER DEFAULT 0, wrong INTEGER DEFAULT 0, PRIMARY KEY (guild_id, user_id));
-                CREATE TABLE IF NOT EXISTS member_events (id SERIAL PRIMARY KEY, guild_id TEXT NOT NULL, user_id TEXT NOT NULL, username TEXT NOT NULL, event_type TEXT NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW());
-                CREATE TABLE IF NOT EXISTS member_messages (id SERIAL PRIMARY KEY, guild_id TEXT NOT NULL, user_id TEXT NOT NULL, username TEXT NOT NULL, hour INTEGER NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW());
-                CREATE INDEX IF NOT EXISTS idx_member_events_guild ON member_events(guild_id);
-                CREATE INDEX IF NOT EXISTS idx_member_messages_guild ON member_messages(guild_id);
-                INSERT INTO wizard_state (id) VALUES (1) ON CONFLICT DO NOTHING;
-            """)
+            # Run each statement individually to avoid connection reset on large transactions
+            stmts = [
+                "CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+                "CREATE TABLE IF NOT EXISTS conversations (id SERIAL PRIMARY KEY, channel_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, provider TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())",
+                "CREATE INDEX IF NOT EXISTS idx_conv_channel ON conversations(channel_id)",
+                "CREATE TABLE IF NOT EXISTS sessions (token TEXT PRIMARY KEY, user_id TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), expires_at TIMESTAMPTZ NOT NULL)",
+                "CREATE TABLE IF NOT EXISTS wizard_state (id INTEGER PRIMARY KEY CHECK (id = 1), completed INTEGER NOT NULL DEFAULT 0, current_step INTEGER NOT NULL DEFAULT 0, data TEXT NOT NULL DEFAULT '{}')",
+                "INSERT INTO wizard_state (id) VALUES (1) ON CONFLICT (id) DO NOTHING",
+                "CREATE TABLE IF NOT EXISTS faqs (id SERIAL PRIMARY KEY, guild_id TEXT NOT NULL, question TEXT NOT NULL, answer TEXT NOT NULL, match_keywords TEXT NOT NULL, times_used INTEGER DEFAULT 0, created_by TEXT, created_at TIMESTAMPTZ DEFAULT NOW())",
+                "CREATE TABLE IF NOT EXISTS onboarding_config (guild_id TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY (guild_id, key))",
+                "CREATE TABLE IF NOT EXISTS command_permissions (command_name TEXT NOT NULL, guild_id TEXT NOT NULL, role_id TEXT NOT NULL, PRIMARY KEY (command_name, guild_id, role_id))",
+                "CREATE TABLE IF NOT EXISTS digest_config (guild_id TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY (guild_id, key))",
+                "CREATE TABLE IF NOT EXISTS moderation_config (guild_id TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY (guild_id, key))",
+                "CREATE TABLE IF NOT EXISTS moderation_logs (id SERIAL PRIMARY KEY, guild_id TEXT NOT NULL, channel_id TEXT NOT NULL, message_id TEXT NOT NULL, author_id TEXT NOT NULL, content TEXT NOT NULL, reason TEXT, severity TEXT, categories TEXT, created_at TIMESTAMPTZ DEFAULT NOW())",
+                "CREATE TABLE IF NOT EXISTS auto_translate_channels (guild_id TEXT NOT NULL, channel_id TEXT NOT NULL, target_language TEXT NOT NULL, PRIMARY KEY (guild_id, channel_id))",
+                "CREATE TABLE IF NOT EXISTS channel_prompts (guild_id TEXT NOT NULL, channel_id TEXT NOT NULL, system_prompt TEXT NOT NULL, PRIMARY KEY (guild_id, channel_id))",
+                "CREATE TABLE IF NOT EXISTS channel_providers (guild_id TEXT NOT NULL, channel_id TEXT NOT NULL, provider_name TEXT NOT NULL, PRIMARY KEY (guild_id, channel_id))",
+                "CREATE TABLE IF NOT EXISTS analytics (id SERIAL PRIMARY KEY, event_type TEXT NOT NULL, guild_id TEXT, channel_id TEXT, user_id TEXT, provider TEXT, tokens_used INTEGER, input_tokens INTEGER, output_tokens INTEGER, estimated_cost REAL DEFAULT 0.0, latency_ms INTEGER, created_at TIMESTAMPTZ DEFAULT NOW())",
+                "CREATE INDEX IF NOT EXISTS idx_analytics_guild ON analytics(guild_id)",
+                "CREATE INDEX IF NOT EXISTS idx_analytics_created ON analytics(created_at)",
+                "CREATE TABLE IF NOT EXISTS enabled_plugins (guild_id TEXT NOT NULL, plugin_name TEXT NOT NULL, PRIMARY KEY (guild_id, plugin_name))",
+                "CREATE TABLE IF NOT EXISTS trivia_scores (guild_id TEXT NOT NULL, user_id TEXT NOT NULL, correct INTEGER DEFAULT 0, wrong INTEGER DEFAULT 0, PRIMARY KEY (guild_id, user_id))",
+                "CREATE TABLE IF NOT EXISTS member_events (id SERIAL PRIMARY KEY, guild_id TEXT NOT NULL, user_id TEXT NOT NULL, username TEXT NOT NULL, event_type TEXT NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW())",
+                "CREATE INDEX IF NOT EXISTS idx_member_events_guild ON member_events(guild_id)",
+                "CREATE TABLE IF NOT EXISTS member_messages (id SERIAL PRIMARY KEY, guild_id TEXT NOT NULL, user_id TEXT NOT NULL, username TEXT NOT NULL, hour INTEGER NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW())",
+                "CREATE INDEX IF NOT EXISTS idx_member_messages_guild ON member_messages(guild_id)",
+            ]
+            for stmt in stmts:
+                try:
+                    await conn.execute(stmt)
+                except asyncpg.DuplicateTableError:
+                    pass
+                except asyncpg.DuplicateDatabaseError:
+                    pass
+                except Exception as e:
+                    if "already exists" not in str(e).lower():
+                        print(f"[DB Init] {e}")
+            # Migrate column types if created as TEXT instead of TIMESTAMPTZ
+            migrations = [
+                "ALTER TABLE analytics ALTER COLUMN created_at TYPE TIMESTAMPTZ USING created_at::timestamptz",
+                "ALTER TABLE conversations ALTER COLUMN created_at TYPE TIMESTAMPTZ USING created_at::timestamptz",
+                "ALTER TABLE member_events ALTER COLUMN created_at TYPE TIMESTAMPTZ USING created_at::timestamptz",
+                "ALTER TABLE member_messages ALTER COLUMN created_at TYPE TIMESTAMPTZ USING created_at::timestamptz",
+                "ALTER TABLE sessions ALTER COLUMN expires_at TYPE TIMESTAMPTZ USING expires_at::timestamptz",
+                "ALTER TABLE sessions ALTER COLUMN created_at TYPE TIMESTAMPTZ USING created_at::timestamptz",
+            ]
+            for mig in migrations:
+                try:
+                    await conn.execute(mig)
+                except Exception:
+                    pass  # already correct type
         finally:
             await conn.close()
-        # Pool is per-loop so no reset needed — each loop gets its own pool
     else:
         db = await get_db()
         await db.executescript("""
@@ -225,9 +248,6 @@ async def init_db():
         await db.commit()
 
 async def init_member_analytics_tables():
-    pass
-async def init_member_analytics_tables():
-    """Already included in init_db, this is kept for backwards compatibility."""
     pass
 
 
@@ -385,7 +405,7 @@ async def validate_session(token: str) -> dict | None:
     else:
         db = await get_db()
         cursor = await db.execute(
-            "SELECT user_id, expires_at FROM sessions WHERE token = ? AND expires_at > datetime('now')",
+            "SELECT user_id, expires_at FROM sessions WHERE token = ? AND expires_at > NOW()",
             (token,)
         )
         row = await cursor.fetchone()
@@ -664,7 +684,7 @@ async def get_analytics_summary(guild_id: str) -> dict:
 
 async def get_analytics_history(guild_id: str, days: int = 30) -> list[dict]:
     return await execute(
-        "SELECT date(created_at) as date, COUNT(*) as total_events, SUM(CASE WHEN event_type='command' THEN 1 ELSE 0 END) as commands, AVG(latency_ms) as avg_latency FROM analytics WHERE guild_id = ? AND created_at >= datetime('now', ?) GROUP BY date(created_at) ORDER BY date ASC",
+        "SELECT DATE(created_at) as date, COUNT(*) as total_events, SUM(CASE WHEN event_type='command' THEN 1 ELSE 0 END) as commands, AVG(latency_ms) as avg_latency FROM analytics WHERE guild_id = ? AND created_at >= datetime('now', ?) GROUP BY DATE(created_at) ORDER BY date ASC",
         (guild_id, f"-{days} days"), fetch="all"
     ) or []
 
@@ -688,7 +708,7 @@ async def get_global_analytics_summary() -> dict:
     row = await execute("SELECT AVG(latency_ms) as avg FROM analytics WHERE latency_ms IS NOT NULL", fetch="one")
     avg_latency = row["avg"] or 0 if row else 0
     provider_dist = await execute("SELECT provider, COUNT(*) as count FROM analytics WHERE provider IS NOT NULL AND provider != 'none' GROUP BY provider ORDER BY count DESC", fetch="all") or []
-    daily = await execute("SELECT date(created_at) as date, COUNT(*) as count FROM analytics WHERE created_at >= datetime('now', '-30 days') GROUP BY date(created_at) ORDER BY date ASC", fetch="all") or []
+    daily = await execute("SELECT DATE(created_at) as date, COUNT(*) as count FROM analytics WHERE created_at >= (NOW() - INTERVAL '30 days') GROUP BY DATE(created_at) ORDER BY date ASC", fetch="all") or []
     return {"total_events": total, "counts": counts, "avg_latency": avg_latency, "provider_distribution": provider_dist, "daily_history": daily}
 
 
@@ -725,7 +745,7 @@ async def get_trivia_leaderboard(guild_id: str, limit: int = 10) -> list[dict]:
 
 async def get_cost_summary(days: int = 30) -> list[dict]:
     return await execute(
-        "SELECT date(created_at) as date, provider, SUM(estimated_cost) as daily_cost, SUM(input_tokens) as total_input, SUM(output_tokens) as total_output, COUNT(*) as requests FROM analytics WHERE created_at >= datetime('now', ?) AND provider IS NOT NULL AND provider != 'none' GROUP BY date(created_at), provider ORDER BY date ASC",
+        "SELECT DATE(created_at) as date, provider, SUM(estimated_cost) as daily_cost, SUM(input_tokens) as total_input, SUM(output_tokens) as total_output, COUNT(*) as requests FROM analytics WHERE created_at >= datetime('now', ?) AND provider IS NOT NULL AND provider != 'none' GROUP BY DATE(created_at), provider ORDER BY date ASC",
         (f"-{days} days",), fetch="all"
     ) or []
 
@@ -736,13 +756,13 @@ async def get_total_cost_by_provider(days: int = 30) -> list[dict]:
     ) or []
 
 async def get_monthly_projected_cost() -> dict:
-    row = await execute("SELECT SUM(estimated_cost) as week_cost, COUNT(*) as week_requests FROM analytics WHERE created_at >= datetime('now', '-7 days')", fetch="one")
+    row = await execute("SELECT SUM(estimated_cost) as week_cost, COUNT(*) as week_requests FROM analytics WHERE created_at >= (NOW() - INTERVAL '7 days')", fetch="one")
     week_cost = row["week_cost"] or 0.0 if row else 0.0
     week_requests = row["week_requests"] or 0 if row else 0
     return {"week_cost": round(week_cost, 4), "daily_avg_cost": round(week_cost/7, 4), "daily_avg_requests": round(week_requests/7, 1), "projected_monthly": round(week_cost/7*30, 4)}
 
 async def get_cost_alert_status(threshold: float) -> dict:
-    row = await execute("SELECT SUM(estimated_cost) as month_cost FROM analytics WHERE created_at >= datetime('now', 'start of month')", fetch="one")
+    row = await execute("SELECT SUM(estimated_cost) as month_cost FROM analytics WHERE created_at >= date_trunc('month', NOW())", fetch="one")
     month_cost = row["month_cost"] or 0.0 if row else 0.0
     percentage = (month_cost / threshold * 100) if threshold > 0 else 0
     return {"month_cost": round(month_cost, 4), "threshold": threshold, "percentage": round(percentage, 1), "exceeded": month_cost >= threshold, "warning": percentage >= 80}
@@ -762,7 +782,7 @@ async def get_member_overview(guild_id: str, days: int = 30) -> dict:
     return {**(dict(row) if row else {}), **(dict(msg_row) if msg_row else {})}
 
 async def get_member_join_leave_history(guild_id: str, days: int = 30) -> list[dict]:
-    return await execute("SELECT date(created_at) as date, SUM(CASE WHEN event_type='join' THEN 1 ELSE 0 END) as joins, SUM(CASE WHEN event_type='leave' THEN 1 ELSE 0 END) as leaves FROM member_events WHERE guild_id = ? AND created_at >= datetime('now', ?) GROUP BY date(created_at) ORDER BY date ASC", (guild_id, f"-{days} days"), fetch="all") or []
+    return await execute("SELECT DATE(created_at) as date, SUM(CASE WHEN event_type='join' THEN 1 ELSE 0 END) as joins, SUM(CASE WHEN event_type='leave' THEN 1 ELSE 0 END) as leaves FROM member_events WHERE guild_id = ? AND created_at >= datetime('now', ?) GROUP BY DATE(created_at) ORDER BY date ASC", (guild_id, f"-{days} days"), fetch="all") or []
 
 async def get_top_active_members(guild_id: str, days: int = 30, limit: int = 10) -> list[dict]:
     return await execute("SELECT user_id, username, COUNT(*) as message_count FROM member_messages WHERE guild_id = ? AND created_at >= datetime('now', ?) GROUP BY user_id ORDER BY message_count DESC LIMIT ?", (guild_id, f"-{days} days", limit), fetch="all") or []
