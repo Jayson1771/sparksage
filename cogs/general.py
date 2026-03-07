@@ -8,6 +8,7 @@ from discord import app_commands
 import config
 import providers
 import db as database
+from cogs.permissions import require_permission
 
 
 class General(commands.Cog):
@@ -16,6 +17,7 @@ class General(commands.Cog):
 
     @app_commands.command(name="ask", description="Ask SparkSage a question")
     @app_commands.describe(question="Your question for SparkSage")
+    @require_permission()
     async def ask(self, interaction: discord.Interaction, question: str):
         await interaction.response.defer()
         try:
@@ -28,7 +30,6 @@ class General(commands.Cog):
             )
             latency_ms = int((time.time() - start) * 1000)
 
-            print(f"[ANALYTICS DEBUG] Saving event: provider={provider_name} latency={latency_ms}ms")
             try:
                 await database.add_analytics_event(
                     event_type="command",
@@ -41,11 +42,8 @@ class General(commands.Cog):
                     estimated_cost=0.0,
                     latency_ms=latency_ms,
                 )
-                print(f"[ANALYTICS DEBUG] Event saved successfully!")
             except Exception as e:
-                print(f"[ANALYTICS DEBUG] FAILED to save event: {e}")
-                import traceback
-                traceback.print_exc()
+                print(f"[ANALYTICS] Failed to save event: {e}")
 
             provider_label = config.PROVIDERS.get(provider_name, {}).get("name", provider_name)
             footer = f"\n-# Powered by {provider_label}"
@@ -62,6 +60,7 @@ class General(commands.Cog):
             await interaction.followup.send("Something went wrong. Please try again.")
 
     @app_commands.command(name="clear", description="Clear SparkSage's conversation memory for this channel")
+    @require_permission()
     async def clear(self, interaction: discord.Interaction):
         await database.clear_messages(str(interaction.channel_id))
         await interaction.response.send_message("Conversation history cleared!")

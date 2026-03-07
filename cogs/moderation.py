@@ -42,6 +42,27 @@ SEVERITY_EMOJIS = {
 }
 
 
+async def _get_banned_words(guild_id: str) -> list[str]:
+    """Read banned words from the moderation_extra_config JSON."""
+    try:
+        val = await database.get_config("moderation_extra_config")
+        if val:
+            data = json.loads(val)
+            return [w.lower() for w in data.get("banned_words", [])]
+    except Exception:
+        pass
+    return []
+
+
+def _check_banned_words(content: str, banned_words: list[str]) -> str | None:
+    """Return the matched banned word if found, else None."""
+    content_lower = content.lower()
+    for word in banned_words:
+        if word and word in content_lower:
+            return word
+    return None
+
+
 class ModerationView(discord.ui.View):
     """Action buttons for mod log messages."""
 
@@ -110,7 +131,7 @@ class Moderation(commands.Cog):
             return
         if not message.guild:
             return
-        if not message.content or len(message.content) < 5:
+        if not message.content or len(message.content) < 2:
             return
 
         guild_id = str(message.guild.id)
@@ -119,19 +140,61 @@ class Moderation(commands.Cog):
         if not enabled or enabled.lower() != "true":
             return
 
-        sensitivity = await database.get_moderation_config(guild_id, "MODERATION_SENSITIVITY") or "medium"
         mod_log_channel_id = await database.get_moderation_config(guild_id, "MOD_LOG_CHANNEL_ID")
         if not mod_log_channel_id:
             return
 
-        # Run AI moderation check in executor
+        mod_channel = message.guild.get_channel(int(mod_log_channel_id))
+        if not mod_channel:
+            return
+
+        # ── 1. Check banned words first (fast, no AI needed) ──────────────────
+        banned_words = await _get_banned_words(guild_id)
+        matched_word = _check_banned_words(message.content, banned_words)
+
+        if matched_word:
+            await database.add_moderation_log(
+                guild_id=guild_id,
+                channel_id=str(message.channel.id),
+                message_id=str(message.id),
+                author_id=str(message.author.id),
+                content=message.content[:500],
+                reason=f"Banned word detected: '{matched_word}'",
+                severity="high",
+                categories="banned_word"
+            )
+
+            embed = discord.Embed(
+                title="🔴 Banned Word Detected",
+                color=discord.Color.red(),
+                timestamp=message.created_at
+            )
+            embed.add_field(name="Author", value=f"{message.author.mention} (`{message.author}`)", inline=True)
+            embed.add_field(name="Channel", value=message.channel.mention, inline=True)
+            embed.add_field(name="Severity", value="**HIGH**", inline=True)
+            embed.add_field(name="Reason", value=f"Banned word: `{matched_word}`", inline=False)
+            embed.add_field(name="Message Content", value=f"```{message.content[:900]}```", inline=False)
+            embed.add_field(name="Jump to Message", value=f"[Click here]({message.jump_url})", inline=False)
+            embed.set_thumbnail(url=message.author.display_avatar.url)
+            embed.set_footer(text="SparkSage Moderation • Human review required")
+
+            view = ModerationView(
+                message_author_id=message.author.id,
+                channel_id=message.channel.id,
+                message_id=message.id
+            )
+            await mod_channel.send(embed=embed, view=view)
+            return  # Don't double-flag with AI
+
+        # ── 2. AI moderation check ─────────────────────────────────────────────
+        if len(message.content) < 5:
+            return
+
+        sensitivity = await database.get_moderation_config(guild_id, "MODERATION_SENSITIVITY") or "medium"
+
         try:
             loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(
-                None,
-                self._check_message,
-                message.content
-            )
+            result = await loop.run_in_executor(None, self._check_message, message.content)
 
             if not result or not result.get("flagged"):
                 return
@@ -142,12 +205,6 @@ class Moderation(commands.Cog):
             if severity not in threshold:
                 return
 
-            # Log to mod channel
-            mod_channel = message.guild.get_channel(int(mod_log_channel_id))
-            if not mod_channel:
-                return
-
-            # Save to DB
             await database.add_moderation_log(
                 guild_id=guild_id,
                 channel_id=str(message.channel.id),
@@ -159,7 +216,6 @@ class Moderation(commands.Cog):
                 categories=",".join(result.get("categories", []))
             )
 
-            # Build mod log embed
             emoji = SEVERITY_EMOJIS.get(severity, "🟡")
             color = SEVERITY_COLORS.get(severity, discord.Color.yellow())
 
@@ -172,21 +228,9 @@ class Moderation(commands.Cog):
             embed.add_field(name="Channel", value=message.channel.mention, inline=True)
             embed.add_field(name="Severity", value=f"**{severity.upper()}**", inline=True)
             embed.add_field(name="Reason", value=result.get("reason", "N/A"), inline=False)
-            embed.add_field(
-                name="Categories",
-                value=", ".join(result.get("categories", [])) or "N/A",
-                inline=False
-            )
-            embed.add_field(
-                name="Message Content",
-                value=f"```{message.content[:900]}```",
-                inline=False
-            )
-            embed.add_field(
-                name="Jump to Message",
-                value=f"[Click here]({message.jump_url})",
-                inline=False
-            )
+            embed.add_field(name="Categories", value=", ".join(result.get("categories", [])) or "N/A", inline=False)
+            embed.add_field(name="Message Content", value=f"```{message.content[:900]}```", inline=False)
+            embed.add_field(name="Jump to Message", value=f"[Click here]({message.jump_url})", inline=False)
             embed.set_thumbnail(url=message.author.display_avatar.url)
             embed.set_footer(text="SparkSage Moderation • Human review required")
 
@@ -195,25 +239,20 @@ class Moderation(commands.Cog):
                 channel_id=message.channel.id,
                 message_id=message.id
             )
-
             await mod_channel.send(embed=embed, view=view)
 
         except Exception as e:
             print(f"Moderation error in guild {guild_id}: {e}")
 
     def _check_message(self, content: str) -> dict | None:
-        """Synchronous AI moderation check."""
         try:
             history = [{"role": "user", "content": f"Message to moderate:\n{content}"}]
             response, _ = providers.chat(history, MODERATION_PROMPT)
-
-            # Extract JSON from response
             response = response.strip()
             if "```" in response:
                 response = response.split("```")[1]
                 if response.startswith("json"):
                     response = response[4:]
-
             return json.loads(response.strip())
         except Exception as e:
             print(f"Moderation AI parse error: {e}")
@@ -236,7 +275,7 @@ class Moderation(commands.Cog):
     @app_commands.checks.has_permissions(manage_guild=True)
     async def mod_disable(self, interaction: discord.Interaction):
         await database.set_moderation_config(str(interaction.guild_id), "MODERATION_ENABLED", "false")
-        await interaction.response.send_message("⏸️ Content moderation disabled.")
+        await interaction.response.send_message("⏹️ Content moderation disabled.")
 
     @moderation_group.command(name="setchannel", description="Set the mod-log channel for flagged messages")
     @app_commands.describe(channel="Channel to post moderation alerts in")
@@ -265,28 +304,16 @@ class Moderation(commands.Cog):
         channel_id = await database.get_moderation_config(guild_id, "MOD_LOG_CHANNEL_ID")
         sensitivity = await database.get_moderation_config(guild_id, "MODERATION_SENSITIVITY") or "medium"
         total_flags = await database.get_moderation_count(guild_id)
-
+        banned_words = await _get_banned_words(guild_id)
         channel_display = f"<#{channel_id}>" if channel_id else "*(not set)*"
 
         embed = discord.Embed(title="⚙️ Moderation Configuration", color=discord.Color.blurple())
-        embed.add_field(name="Status", value="✅ Enabled" if enabled == "true" else "⏸️ Disabled", inline=True)
+        embed.add_field(name="Status", value="✅ Enabled" if enabled == "true" else "⏹️ Disabled", inline=True)
         embed.add_field(name="Mod Log Channel", value=channel_display, inline=True)
         embed.add_field(name="Sensitivity", value=f"**{sensitivity.capitalize()}**", inline=True)
         embed.add_field(name="Total Flags", value=str(total_flags), inline=True)
+        embed.add_field(name="Banned Words", value=str(len(banned_words)), inline=True)
         embed.set_footer(text="SparkSage always flags for human review — never auto-deletes.")
-        await interaction.response.send_message(embed=embed)
-
-    @moderation_group.command(name="stats", description="View moderation statistics")
-    @app_commands.checks.has_permissions(manage_guild=True)
-    async def mod_stats(self, interaction: discord.Interaction):
-        guild_id = str(interaction.guild_id)
-        stats = await database.get_moderation_stats(guild_id)
-
-        embed = discord.Embed(title="📊 Moderation Statistics", color=discord.Color.blurple())
-        embed.add_field(name="🔴 High Severity", value=str(stats.get("high", 0)), inline=True)
-        embed.add_field(name="🟠 Medium Severity", value=str(stats.get("medium", 0)), inline=True)
-        embed.add_field(name="🟡 Low Severity", value=str(stats.get("low", 0)), inline=True)
-        embed.add_field(name="📋 Total Flagged", value=str(sum(stats.values())), inline=True)
         await interaction.response.send_message(embed=embed)
 
     @moderation_group.command(name="test", description="Test moderation on a sample message")
@@ -294,14 +321,24 @@ class Moderation(commands.Cog):
     @app_commands.checks.has_permissions(manage_guild=True)
     async def mod_test(self, interaction: discord.Interaction, message: str):
         await interaction.response.defer(ephemeral=True)
+        guild_id = str(interaction.guild_id)
+
+        # Check banned words first
+        banned_words = await _get_banned_words(guild_id)
+        matched = _check_banned_words(message, banned_words)
+        if matched:
+            embed = discord.Embed(title="🔍 Moderation Test Result", color=discord.Color.red())
+            embed.add_field(name="Flagged", value="Yes ⚠️", inline=True)
+            embed.add_field(name="Reason", value=f"Banned word: `{matched}`", inline=False)
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
+
         try:
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(None, self._check_message, message)
-
             if not result:
                 await interaction.followup.send("❌ Could not parse AI response.", ephemeral=True)
                 return
-
             flagged = result.get("flagged", False)
             embed = discord.Embed(
                 title="🔍 Moderation Test Result",
@@ -310,23 +347,16 @@ class Moderation(commands.Cog):
             embed.add_field(name="Flagged", value="Yes ⚠️" if flagged else "No ✅", inline=True)
             embed.add_field(name="Severity", value=result.get("severity") or "N/A", inline=True)
             embed.add_field(name="Reason", value=result.get("reason") or "N/A", inline=False)
-            embed.add_field(
-                name="Categories",
-                value=", ".join(result.get("categories", [])) or "None",
-                inline=False
-            )
+            embed.add_field(name="Categories", value=", ".join(result.get("categories", [])) or "None", inline=False)
             await interaction.followup.send(embed=embed, ephemeral=True)
         except Exception as e:
             await interaction.followup.send(f"❌ Error: {e}", ephemeral=True)
-
-    # --- Error Handler ---
 
     @mod_enable.error
     @mod_disable.error
     @mod_setchannel.error
     @mod_sensitivity.error
     @mod_status.error
-    @mod_stats.error
     @mod_test.error
     async def mod_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
         if isinstance(error, app_commands.MissingPermissions):
