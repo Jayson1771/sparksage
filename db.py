@@ -11,7 +11,8 @@ DATABASE_PATH = os.getenv("DATABASE_PATH", "sparksage.db")
 USE_POSTGRES = DATABASE_URL.startswith("postgresql") or DATABASE_URL.startswith("postgres")
 
 _db: aiosqlite.Connection | None = None
-_pg_pool = None
+# Per-loop pool cache: {loop_id: pool}
+_pg_pools: dict = {}
 
 
 # ── Connection helpers ────────────────────────────────────────────────────────
@@ -28,19 +29,23 @@ async def get_db() -> aiosqlite.Connection:
 
 
 async def get_pg():
-    """Return asyncpg pool (Railway production)."""
-    global _pg_pool
-    if _pg_pool is None:
-        import asyncpg
+    """Return asyncpg pool for the CURRENT event loop.
+    Each event loop (uvicorn, discord bot) gets its own pool.
+    """
+    import asyncio
+    import asyncpg
+    loop = asyncio.get_event_loop()
+    loop_id = id(loop)
+    if loop_id not in _pg_pools or _pg_pools[loop_id].is_closing():
         url = DATABASE_URL.replace("postgres://", "postgresql://", 1)
-        _pg_pool = await asyncpg.create_pool(
+        _pg_pools[loop_id] = await asyncpg.create_pool(
             url,
             min_size=1,
             max_size=10,
             command_timeout=60,
-            statement_cache_size=0,  # avoids prepared statement conflicts
+            statement_cache_size=0,
         )
-    return _pg_pool
+    return _pg_pools[loop_id]
 
 
 class Row(dict):
@@ -188,14 +193,7 @@ async def init_db():
             """)
         finally:
             await conn.close()
-        # Reset the shared pool so it gets created fresh in the correct event loop
-        global _pg_pool
-        if _pg_pool is not None:
-            try:
-                await _pg_pool.close()
-            except Exception:
-                pass
-            _pg_pool = None
+        # Pool is per-loop so no reset needed — each loop gets its own pool
     else:
         db = await get_db()
         await db.executescript("""
@@ -397,13 +395,18 @@ async def delete_session(token: str):
     await execute("DELETE FROM sessions WHERE token = ?", (token,))
 
 async def close_db():
-    global _db, _pg_pool
+    import asyncio
+    global _db, _pg_pools
     if _db:
         await _db.close()
         _db = None
-    if _pg_pool:
-        await _pg_pool.close()
-        _pg_pool = None
+    loop_id = id(asyncio.get_event_loop())
+    if loop_id in _pg_pools:
+        try:
+            await _pg_pools[loop_id].close()
+        except Exception:
+            pass
+        del _pg_pools[loop_id]
 
 
 # ── Permission helpers ────────────────────────────────────────────────────────
