@@ -6,9 +6,28 @@ from discord import app_commands
 import db as database
 
 
+async def get_blocked_users(guild_id: str) -> list[str]:
+    """Get list of blocked user IDs from DB."""
+    import json
+    val = await database.get_config("permissions_extra_config")
+    if not val:
+        return []
+    try:
+        data = json.loads(val)
+        return [str(u) for u in data.get("blocked_users", [])]
+    except Exception:
+        return []
+
+
 async def check_command_permission(interaction: discord.Interaction, command_name: str) -> bool:
     """Check if the user has permission to run a command based on role restrictions."""
     guild_id = str(interaction.guild_id)
+
+    # Check if user is blocked
+    blocked = await get_blocked_users(guild_id)
+    if str(interaction.user.id) in blocked:
+        return False
+
     required_roles = await database.get_command_permissions(guild_id, command_name)
 
     # No restrictions set — everyone can use it
@@ -37,7 +56,12 @@ def require_permission():
             required_roles = await database.get_command_permissions(guild_id, command_name)
             role_mentions = [f"<@&{r}>" for r in required_roles]
 
-            msg = f"❌ You need one of these roles to use `/{command_name}`: {', '.join(role_mentions)}"
+            # Check if blocked or missing role
+            blocked = await get_blocked_users(guild_id)
+            if str(interaction.user.id) in blocked:
+                msg = f"❌ You have been blocked from using bot commands."
+            else:
+                msg = f"❌ You need one of these roles to use `/{command_name}`: {', '.join(role_mentions)}"
 
             # Handle both deferred and non-deferred interactions
             try:
