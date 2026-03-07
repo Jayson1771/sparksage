@@ -27,15 +27,26 @@ def require_permission():
         if not command_name:
             return True
 
+        # Skip permission check in DMs
+        if not interaction.guild_id:
+            return True
+
         allowed = await check_command_permission(interaction, command_name)
         if not allowed:
             guild_id = str(interaction.guild_id)
             required_roles = await database.get_command_permissions(guild_id, command_name)
             role_mentions = [f"<@&{r}>" for r in required_roles]
-            await interaction.response.send_message(
-                f"❌ You need one of these roles to use `/{command_name}`: {', '.join(role_mentions)}",
-                ephemeral=True
-            )
+
+            msg = f"❌ You need one of these roles to use `/{command_name}`: {', '.join(role_mentions)}"
+
+            # Handle both deferred and non-deferred interactions
+            try:
+                if interaction.response.is_done():
+                    await interaction.followup.send(msg, ephemeral=True)
+                else:
+                    await interaction.response.send_message(msg, ephemeral=True)
+            except Exception as e:
+                print(f"[Permissions] Could not send denial message: {e}")
             return False
         return True
 
@@ -53,71 +64,47 @@ class Permissions(commands.Cog):
 
     @permissions_group.command(name="set", description="Restrict a command to a specific role")
     @app_commands.describe(
-        command="The command name to restrict (e.g. 'ask', 'review', 'summarize')",
+        command="The command name to restrict (e.g. 'ask', 'clear', 'summarize')",
         role="The role required to use this command"
     )
     @app_commands.checks.has_permissions(manage_guild=True)
-    async def permissions_set(
-        self,
-        interaction: discord.Interaction,
-        command: str,
-        role: discord.Role,
-    ):
+    async def permissions_set(self, interaction: discord.Interaction, command: str, role: discord.Role):
         guild_id = str(interaction.guild_id)
-
-        # Validate command exists
         valid_commands = [cmd.name for cmd in self.bot.tree.get_commands()]
         if command not in valid_commands:
             await interaction.response.send_message(
-                f"❌ Unknown command `/{command}`. Available commands: {', '.join(f'`{c}`' for c in sorted(valid_commands))}",
+                f"❌ Unknown command `/{command}`. Available: {', '.join(f'`{c}`' for c in sorted(valid_commands))}",
                 ephemeral=True
             )
             return
-
         await database.add_command_permission(guild_id, command, str(role.id))
-
-        embed = discord.Embed(
-            title="🔒 Permission Set",
-            color=discord.Color.orange()
-        )
+        embed = discord.Embed(title="🔑 Permission Set", color=discord.Color.orange())
         embed.add_field(name="Command", value=f"`/{command}`", inline=True)
         embed.add_field(name="Required Role", value=role.mention, inline=True)
         embed.set_footer(text="Users without this role will be denied access.")
         await interaction.response.send_message(embed=embed)
 
     @permissions_group.command(name="remove", description="Remove a role restriction from a command")
-    @app_commands.describe(
-        command="The command name to update",
-        role="The role to remove from the restriction"
-    )
+    @app_commands.describe(command="The command name", role="The role to remove")
     @app_commands.checks.has_permissions(manage_guild=True)
-    async def permissions_remove(
-        self,
-        interaction: discord.Interaction,
-        command: str,
-        role: discord.Role,
-    ):
+    async def permissions_remove(self, interaction: discord.Interaction, command: str, role: discord.Role):
         guild_id = str(interaction.guild_id)
         deleted = await database.remove_command_permission(guild_id, command, str(role.id))
-
         if deleted:
-            await interaction.response.send_message(
-                f"✅ Removed {role.mention} restriction from `/{command}`."
-            )
+            await interaction.response.send_message(f"✅ Removed {role.mention} restriction from `/{command}`.")
         else:
             await interaction.response.send_message(
-                f"❌ No restriction found for `/{command}` with role {role.mention}.",
-                ephemeral=True
+                f"❌ No restriction found for `/{command}` with role {role.mention}.", ephemeral=True
             )
 
     @permissions_group.command(name="clear", description="Remove ALL role restrictions from a command")
-    @app_commands.describe(command="The command name to clear all restrictions from")
+    @app_commands.describe(command="The command name to clear")
     @app_commands.checks.has_permissions(manage_guild=True)
     async def permissions_clear(self, interaction: discord.Interaction, command: str):
         guild_id = str(interaction.guild_id)
         await database.clear_command_permissions(guild_id, command)
         await interaction.response.send_message(
-            f"✅ All role restrictions removed from `/{command}`. Everyone can use it now."
+            f"✅ All restrictions removed from `/{command}`. Everyone can use it now."
         )
 
     @permissions_group.command(name="list", description="Show all command restrictions for this server")
@@ -127,42 +114,36 @@ class Permissions(commands.Cog):
 
         if not all_permissions:
             await interaction.response.send_message(
-                "No command restrictions set. All commands are available to everyone.",
+                f"No command restrictions set for this server (guild ID: `{guild_id}`).\nAll commands are available to everyone.",
                 ephemeral=True
             )
             return
 
         embed = discord.Embed(
-            title=f"🔒 Command Permissions — {interaction.guild.name}",
+            title=f"🔑 Command Permissions — {interaction.guild.name}",
             color=discord.Color.orange()
         )
+        embed.set_footer(text=f"Guild ID: {guild_id}")
 
         for command_name, role_ids in all_permissions.items():
             role_mentions = []
             for role_id in role_ids:
                 role = interaction.guild.get_role(int(role_id))
                 role_mentions.append(role.mention if role else f"*(deleted role {role_id})*")
-
             embed.add_field(
                 name=f"/{command_name}",
                 value="\n".join(role_mentions) or "*(no restrictions)*",
                 inline=False
             )
-
-        embed.set_footer(text="Commands not listed are unrestricted.")
         await interaction.response.send_message(embed=embed)
 
     @permissions_group.command(name="check", description="Check who can use a specific command")
-    @app_commands.describe(command="The command to check permissions for")
+    @app_commands.describe(command="The command to check")
     async def permissions_check(self, interaction: discord.Interaction, command: str):
         guild_id = str(interaction.guild_id)
         role_ids = await database.get_command_permissions(guild_id, command)
-
-        embed = discord.Embed(
-            title=f"🔍 Permissions for /{command}",
-            color=discord.Color.blurple()
-        )
-
+        embed = discord.Embed(title=f"🔍 Permissions for /{command}", color=discord.Color.blurple())
+        embed.set_footer(text=f"Guild ID: {guild_id}")
         if not role_ids:
             embed.description = "✅ No restrictions — everyone can use this command."
         else:
@@ -170,12 +151,8 @@ class Permissions(commands.Cog):
             for role_id in role_ids:
                 role = interaction.guild.get_role(int(role_id))
                 role_mentions.append(role.mention if role else f"*(deleted role {role_id})*")
-            embed.add_field(name="Required Roles (any one of)", value="\n".join(role_mentions), inline=False)
-            embed.set_footer(text="Users need at least one of these roles.")
-
+            embed.add_field(name="Required Roles (any one)", value="\n".join(role_mentions), inline=False)
         await interaction.response.send_message(embed=embed)
-
-    # --- Error Handler ---
 
     @permissions_set.error
     @permissions_remove.error
@@ -183,7 +160,7 @@ class Permissions(commands.Cog):
     async def permissions_admin_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
         if isinstance(error, app_commands.MissingPermissions):
             await interaction.response.send_message(
-                "❌ You need **Manage Server** permission to use this command.", ephemeral=True
+                "❌ You need **Manage Server** permission.", ephemeral=True
             )
 
 
