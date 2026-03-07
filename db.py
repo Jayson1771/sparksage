@@ -388,17 +388,35 @@ async def set_wizard_state(completed=None, current_step=None, data=None):
 # ── Session helpers ───────────────────────────────────────────────────────────
 
 async def create_session(token: str, user_id: str, expires_at: str):
-    await execute(
-        "INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, ?)",
-        (token, user_id, expires_at)
-    )
+    if USE_POSTGRES:
+        from datetime import datetime, timezone
+        if isinstance(expires_at, str):
+            try:
+                dt = datetime.fromisoformat(expires_at)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+            except ValueError:
+                dt = datetime.now(timezone.utc)
+        else:
+            dt = expires_at
+        pool = await get_pg()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO sessions (token, user_id, expires_at) VALUES ($1, $2, $3)",
+                token, user_id, dt
+            )
+    else:
+        await execute(
+            "INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, ?)",
+            (token, user_id, expires_at)
+        )
 
 async def validate_session(token: str) -> dict | None:
     if USE_POSTGRES:
         pool = await get_pg()
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT user_id, expires_at FROM sessions WHERE token = $1 AND expires_at > NOW()",
+                "SELECT user_id, expires_at FROM sessions WHERE token = $1 AND expires_at::timestamptz > NOW()",
                 token
             )
             return dict(row) if row else None
