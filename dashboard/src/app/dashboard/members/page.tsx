@@ -74,7 +74,12 @@ export default function MemberAnalyticsPage() {
     );
   }
 
-  const netGrowth = (overview?.joins_30d || 0) - (overview?.leaves_30d || 0);
+  // FIX 1: Use dynamic keys based on selected `days`, with fallback to any populated key
+  const joinsKey = `joins_${days}d`;
+  const leavesKey = `leaves_${days}d`;
+  const joins = overview?.[joinsKey] ?? overview?.joins ?? 0;
+  const leaves = overview?.[leavesKey] ?? overview?.leaves ?? 0;
+  const netGrowth = joins - leaves;
 
   return (
     <div className="space-y-6">
@@ -97,7 +102,8 @@ export default function MemberAnalyticsPage() {
             <TrendingUp className="h-4 w-4 text-green-500" />
           </CardHeader>
           <CardContent>
-            <p className="text-2xl font-bold text-green-600">{loading ? "..." : (overview?.joins_30d || 0)}</p>
+            {/* FIX 1: Use computed `joins` instead of hardcoded overview?.joins_30d */}
+            <p className="text-2xl font-bold text-green-600">{loading ? "..." : joins}</p>
             <p className="text-xs text-muted-foreground mt-1">Last {days} days</p>
           </CardContent>
         </Card>
@@ -108,7 +114,8 @@ export default function MemberAnalyticsPage() {
             <TrendingDown className="h-4 w-4 text-red-500" />
           </CardHeader>
           <CardContent>
-            <p className="text-2xl font-bold text-red-600">{loading ? "..." : (overview?.leaves_30d || 0)}</p>
+            {/* FIX 1: Use computed `leaves` instead of hardcoded overview?.leaves_30d */}
+            <p className="text-2xl font-bold text-red-600">{loading ? "..." : leaves}</p>
             <p className="text-xs text-muted-foreground mt-1">Last {days} days</p>
           </CardContent>
         </Card>
@@ -138,7 +145,7 @@ export default function MemberAnalyticsPage() {
         </Card>
       </div>
 
-      {/* Join/Leave History Chart */}
+      {/* FIX 2: Member Growth Chart — guard against missing `joins`/`leaves` keys in history items */}
       <Card>
         <CardHeader>
           <CardTitle className="text-base">Member Growth (Last {days} Days)</CardTitle>
@@ -159,16 +166,19 @@ export default function MemberAnalyticsPage() {
                 </defs>
                 <CartesianGrid strokeDasharray="3 3" />
                 <XAxis dataKey="date" tick={{ fontSize: 11 }} />
-                <YAxis tick={{ fontSize: 11 }} />
+                <YAxis tick={{ fontSize: 11 }} allowDecimals={false} />
                 <Tooltip />
                 <Legend />
-                <Area type="monotone" dataKey="joins" stroke="#22c55e" fill="url(#joinGrad)" name="Joins" strokeWidth={2} />
-                <Area type="monotone" dataKey="leaves" stroke="#ef4444" fill="url(#leaveGrad)" name="Leaves" strokeWidth={2} />
+                <Area type="monotone" dataKey="joins" stroke="#22c55e" fill="url(#joinGrad)" name="Joins" strokeWidth={2} dot={false} />
+                <Area type="monotone" dataKey="leaves" stroke="#ef4444" fill="url(#leaveGrad)" name="Leaves" strokeWidth={2} dot={false} />
               </AreaChart>
             </ResponsiveContainer>
           ) : (
+            // FIX 2: Show loading state separately from truly empty data
             <div className="flex items-center justify-center h-48">
-              <p className="text-muted-foreground text-sm">No join/leave data yet.</p>
+              <p className="text-muted-foreground text-sm">
+                {loading ? "Loading chart data..." : "No join/leave data yet."}
+              </p>
             </div>
           )}
         </CardContent>
@@ -186,14 +196,17 @@ export default function MemberAnalyticsPage() {
                 <BarChart data={peakHours}>
                   <CartesianGrid strokeDasharray="3 3" />
                   <XAxis dataKey="label" tick={{ fontSize: 10 }} interval={2} />
-                  <YAxis tick={{ fontSize: 11 }} />
-                  <Tooltip formatter={(v: number | undefined) => [`${v ?? 0} messages`, "Activity"]} />
+                  <YAxis tick={{ fontSize: 11 }} allowDecimals={false} />
+                  {/* FIX 3: Tooltip formatter typed correctly to avoid `undefined` crash */}
+                  <Tooltip formatter={(v: any) => [`${v ?? 0} messages`, "Activity"]} />
                   <Bar dataKey="messages" fill="#6366f1" radius={[3, 3, 0, 0]} name="Messages" />
                 </BarChart>
               </ResponsiveContainer>
             ) : (
               <div className="flex items-center justify-center h-48">
-                <p className="text-muted-foreground text-sm">No message activity tracked yet.</p>
+                <p className="text-muted-foreground text-sm">
+                  {loading ? "Loading chart data..." : "No message activity tracked yet."}
+                </p>
               </div>
             )}
           </CardContent>

@@ -148,8 +148,12 @@ async def executescript(sql: str):
 async def init_db():
     """Create tables if they don't exist."""
     if USE_POSTGRES:
-        pool = await get_pg()
-        async with pool.acquire() as conn:
+        import asyncpg
+        # Use a fresh direct connection for init — never use the shared pool here
+        # because init_db may be called from a different event loop (uvicorn lifespan)
+        url = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+        conn = await asyncpg.connect(url)
+        try:
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS conversations (id SERIAL PRIMARY KEY, channel_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, provider TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
@@ -176,6 +180,16 @@ async def init_db():
                 CREATE INDEX IF NOT EXISTS idx_member_messages_guild ON member_messages(guild_id);
                 INSERT INTO wizard_state (id) VALUES (1) ON CONFLICT DO NOTHING;
             """)
+        finally:
+            await conn.close()
+        # Reset the shared pool so it gets created fresh in the correct event loop
+        global _pg_pool
+        if _pg_pool is not None:
+            try:
+                await _pg_pool.close()
+            except Exception:
+                pass
+            _pg_pool = None
     else:
         db = await get_db()
         await db.executescript("""
@@ -220,6 +234,15 @@ async def get_config(key: str, default: str | None = None) -> str | None:
     return row["value"] if row else default
 
 async def get_all_config() -> dict[str, str]:
+    if USE_POSTGRES:
+        import asyncpg
+        url = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+        conn = await asyncpg.connect(url)
+        try:
+            rows = await conn.fetch("SELECT key, value FROM config")
+            return {r["key"]: r["value"] for r in rows}
+        finally:
+            await conn.close()
     rows = await execute("SELECT key, value FROM config", fetch="all")
     return {r["key"]: r["value"] for r in rows}
 
@@ -254,18 +277,23 @@ async def sync_env_to_db():
         "MAX_TOKENS": str(cfg.MAX_TOKENS),
         "SYSTEM_PROMPT": cfg.SYSTEM_PROMPT,
     }
-    for key, value in env_keys.items():
-        if USE_POSTGRES:
-            pool = await get_pg()
-            async with pool.acquire() as conn:
+    if USE_POSTGRES:
+        import asyncpg
+        url = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+        conn = await asyncpg.connect(url)
+        try:
+            for key, value in env_keys.items():
                 await conn.execute(
                     "INSERT INTO config (key, value) VALUES ($1, $2) ON CONFLICT DO NOTHING",
                     key, value
                 )
-        else:
-            db = await get_db()
+        finally:
+            await conn.close()
+    else:
+        db = await get_db()
+        for key, value in env_keys.items():
             await db.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)", (key, value))
-            await db.commit()
+        await db.commit()
 
 async def sync_db_to_env():
     from dotenv import set_key
