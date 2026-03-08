@@ -759,33 +759,6 @@ async def get_trivia_leaderboard(guild_id: str, limit: int = 10) -> list[dict]:
     return await execute("SELECT user_id, correct, wrong FROM trivia_scores WHERE guild_id = ? ORDER BY correct DESC LIMIT ?", (guild_id, limit), fetch="all") or []
 
 
-# ── Cost tracking helpers ─────────────────────────────────────────────────────
-
-async def get_cost_summary(days: int = 30) -> list[dict]:
-    return await execute(
-        "SELECT DATE(created_at) as date, provider, SUM(estimated_cost) as daily_cost, SUM(input_tokens) as total_input, SUM(output_tokens) as total_output, COUNT(*) as requests FROM analytics WHERE created_at >= datetime('now', ?) AND provider IS NOT NULL AND provider != 'none' GROUP BY DATE(created_at), provider ORDER BY date ASC",
-        (f"-{days} days",), fetch="all"
-    ) or []
-
-async def get_total_cost_by_provider(days: int = 30) -> list[dict]:
-    return await execute(
-        "SELECT provider, SUM(estimated_cost) as total_cost, SUM(input_tokens) as total_input_tokens, SUM(output_tokens) as total_output_tokens, COUNT(*) as total_requests FROM analytics WHERE created_at >= datetime('now', ?) AND provider IS NOT NULL AND provider != 'none' GROUP BY provider ORDER BY total_cost DESC",
-        (f"-{days} days",), fetch="all"
-    ) or []
-
-async def get_monthly_projected_cost() -> dict:
-    row = await execute("SELECT SUM(estimated_cost) as week_cost, COUNT(*) as week_requests FROM analytics WHERE created_at >= (NOW() - INTERVAL '7 days')", fetch="one")
-    week_cost = row["week_cost"] or 0.0 if row else 0.0
-    week_requests = row["week_requests"] or 0 if row else 0
-    return {"week_cost": round(week_cost, 4), "daily_avg_cost": round(week_cost/7, 4), "daily_avg_requests": round(week_requests/7, 1), "projected_monthly": round(week_cost/7*30, 4)}
-
-async def get_cost_alert_status(threshold: float) -> dict:
-    row = await execute("SELECT SUM(estimated_cost) as month_cost FROM analytics WHERE created_at >= date_trunc('month', NOW())", fetch="one")
-    month_cost = row["month_cost"] or 0.0 if row else 0.0
-    percentage = (month_cost / threshold * 100) if threshold > 0 else 0
-    return {"month_cost": round(month_cost, 4), "threshold": threshold, "percentage": round(percentage, 1), "exceeded": month_cost >= threshold, "warning": percentage >= 80}
-
-
 # ── Member analytics helpers ──────────────────────────────────────────────────
 
 async def log_member_event(guild_id: str, user_id: str, username: str, event_type: str):
