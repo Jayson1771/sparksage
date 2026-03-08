@@ -862,3 +862,153 @@ async def get_peak_hours(guild_id: str, days: int = 30) -> list[dict]:
     rows = await execute("SELECT hour, COUNT(*) as message_count FROM member_messages WHERE guild_id = ? AND created_at >= datetime('now', ?) GROUP BY hour ORDER BY hour ASC", (guild_id, f"-{days} days"), fetch="all") or []
     row_map = {r["hour"]: r["message_count"] for r in rows}
     return [{"hour": h, "messages": row_map.get(h, 0)} for h in range(24)]
+
+
+# ── Cost Tracking Functions ────────────────────────────────────────────────────
+
+PROVIDER_PRICING = {
+    "gemini":     {"input": 0.0,  "output": 0.0},
+    "groq":       {"input": 0.0,  "output": 0.0},
+    "openrouter": {"input": 0.0,  "output": 0.0},
+    "anthropic":  {"input": 3.0,  "output": 15.0},
+    "openai":     {"input": 2.50, "output": 10.0},
+}
+
+def _calc_cost(provider: str, input_tokens: int, output_tokens: int) -> float:
+    pricing = PROVIDER_PRICING.get(provider, {"input": 0.0, "output": 0.0})
+    return (input_tokens * pricing["input"] + output_tokens * pricing["output"]) / 1_000_000
+
+
+async def get_total_cost_by_provider(days: int = 30) -> list[dict]:
+    if USE_POSTGRES:
+        pool = await get_pg()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT provider, COUNT(*) as total_requests, "
+                "COALESCE(SUM(input_tokens), 0) as total_input_tokens, "
+                "COALESCE(SUM(output_tokens), 0) as total_output_tokens "
+                "FROM analytics WHERE created_at >= NOW() - CAST($1 AS interval) "
+                "GROUP BY provider ORDER BY total_requests DESC",
+                f"{days} days"
+            )
+            return [{
+                "provider": r["provider"],
+                "total_requests": int(r["total_requests"]),
+                "total_input_tokens": int(r["total_input_tokens"]),
+                "total_output_tokens": int(r["total_output_tokens"]),
+                "total_cost": _calc_cost(r["provider"], int(r["total_input_tokens"]), int(r["total_output_tokens"])),
+            } for r in rows]
+    rows = await execute(
+        "SELECT provider, COUNT(*) as total_requests, "
+        "COALESCE(SUM(input_tokens), 0) as total_input_tokens, "
+        "COALESCE(SUM(output_tokens), 0) as total_output_tokens "
+        "FROM analytics WHERE created_at >= datetime('now', ?) "
+        "GROUP BY provider ORDER BY total_requests DESC",
+        (f"-{days} days",), fetch="all"
+    ) or []
+    return [{
+        "provider": r["provider"],
+        "total_requests": r["total_requests"],
+        "total_input_tokens": r["total_input_tokens"],
+        "total_output_tokens": r["total_output_tokens"],
+        "total_cost": _calc_cost(r["provider"], r["total_input_tokens"], r["total_output_tokens"]),
+    } for r in rows]
+
+
+async def get_cost_summary(days: int = 30) -> list[dict]:
+    if USE_POSTGRES:
+        pool = await get_pg()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT DATE(created_at) as date, provider, COUNT(*) as requests, "
+                "COALESCE(SUM(input_tokens), 0) as input_tokens, "
+                "COALESCE(SUM(output_tokens), 0) as output_tokens "
+                "FROM analytics WHERE created_at >= NOW() - CAST($1 AS interval) "
+                "GROUP BY DATE(created_at), provider ORDER BY date ASC",
+                f"{days} days"
+            )
+            return [{
+                "date": str(r["date"]),
+                "provider": r["provider"],
+                "requests": int(r["requests"]),
+                "daily_cost": _calc_cost(r["provider"], int(r["input_tokens"]), int(r["output_tokens"])),
+            } for r in rows]
+    rows = await execute(
+        "SELECT DATE(created_at) as date, provider, COUNT(*) as requests, "
+        "COALESCE(SUM(input_tokens), 0) as input_tokens, "
+        "COALESCE(SUM(output_tokens), 0) as output_tokens "
+        "FROM analytics WHERE created_at >= datetime('now', ?) "
+        "GROUP BY DATE(created_at), provider ORDER BY date ASC",
+        (f"-{days} days",), fetch="all"
+    ) or []
+    return [{
+        "date": r["date"],
+        "provider": r["provider"],
+        "requests": r["requests"],
+        "daily_cost": _calc_cost(r["provider"], r["input_tokens"], r["output_tokens"]),
+    } for r in rows]
+
+
+async def get_monthly_projected_cost() -> dict:
+    if USE_POSTGRES:
+        pool = await get_pg()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT provider, COUNT(*) as requests, "
+                "COALESCE(SUM(input_tokens), 0) as input_tokens, "
+                "COALESCE(SUM(output_tokens), 0) as output_tokens "
+                "FROM analytics WHERE created_at >= NOW() - INTERVAL '7 days' "
+                "GROUP BY provider"
+            )
+            week_cost = sum(_calc_cost(r["provider"], int(r["input_tokens"]), int(r["output_tokens"])) for r in rows)
+            total_requests = sum(int(r["requests"]) for r in rows)
+    else:
+        rows = await execute(
+            "SELECT provider, COUNT(*) as requests, "
+            "COALESCE(SUM(input_tokens), 0) as input_tokens, "
+            "COALESCE(SUM(output_tokens), 0) as output_tokens "
+            "FROM analytics WHERE created_at >= datetime('now', '-7 days') "
+            "GROUP BY provider",
+            fetch="all"
+        ) or []
+        week_cost = sum(_calc_cost(r["provider"], r["input_tokens"], r["output_tokens"]) for r in rows)
+        total_requests = sum(r["requests"] for r in rows)
+
+    daily_avg_cost = week_cost / 7
+    daily_avg_requests = total_requests / 7
+    return {
+        "week_cost": week_cost,
+        "daily_avg_cost": daily_avg_cost,
+        "daily_avg_requests": daily_avg_requests,
+        "projected_monthly": daily_avg_cost * 30,
+    }
+
+
+async def get_cost_alert_status(threshold: float = 10.0) -> dict:
+    if USE_POSTGRES:
+        pool = await get_pg()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT provider, COALESCE(SUM(input_tokens), 0) as input_tokens, "
+                "COALESCE(SUM(output_tokens), 0) as output_tokens "
+                "FROM analytics WHERE created_at >= date_trunc('month', NOW()) "
+                "GROUP BY provider"
+            )
+            month_cost = sum(_calc_cost(r["provider"], int(r["input_tokens"]), int(r["output_tokens"])) for r in rows)
+    else:
+        rows = await execute(
+            "SELECT provider, COALESCE(SUM(input_tokens), 0) as input_tokens, "
+            "COALESCE(SUM(output_tokens), 0) as output_tokens "
+            "FROM analytics WHERE created_at >= datetime('now', 'start of month') "
+            "GROUP BY provider",
+            fetch="all"
+        ) or []
+        month_cost = sum(_calc_cost(r["provider"], r["input_tokens"], r["output_tokens"]) for r in rows)
+
+    return {
+        "month_cost": month_cost,
+        "threshold": threshold,
+        "percent_used": (month_cost / threshold * 100) if threshold > 0 else 0,
+        "alert": month_cost >= threshold * 0.8,
+        "exceeded": month_cost >= threshold,
+    }
