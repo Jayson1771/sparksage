@@ -330,6 +330,14 @@ async def sync_db_to_env():
 # ── Conversation helpers ──────────────────────────────────────────────────────
 
 async def add_message(channel_id: str, role: str, content: str, provider: str | None = None):
+    if USE_POSTGRES:
+        pool = await get_pg()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO conversations (channel_id, role, content, provider) VALUES ($1, $2, $3, $4)",
+                channel_id, role, content, provider
+            )
+        return
     await execute(
         "INSERT INTO conversations (channel_id, role, content, provider) VALUES (?, ?, ?, ?)",
         (channel_id, role, content, provider)
@@ -354,6 +362,11 @@ async def get_messages(channel_id: str, limit: int = 20) -> list[dict]:
         return [dict(r) for r in reversed(rows)]
 
 async def clear_messages(channel_id: str):
+    if USE_POSTGRES:
+        pool = await get_pg()
+        async with pool.acquire() as conn:
+            await conn.execute("DELETE FROM conversations WHERE channel_id = $1", channel_id)
+        return
     await execute("DELETE FROM conversations WHERE channel_id = ?", (channel_id,))
 
 async def list_channels() -> list[dict]:
@@ -674,6 +687,11 @@ async def set_channel_prompt(guild_id: str, channel_id: str, prompt: str):
     )
 
 async def delete_channel_prompt(guild_id: str, channel_id: str):
+    if USE_POSTGRES:
+        pool = await get_pg()
+        async with pool.acquire() as conn:
+            await conn.execute("DELETE FROM channel_prompts WHERE guild_id = $1 AND channel_id = $2", guild_id, channel_id)
+        return
     await execute("DELETE FROM channel_prompts WHERE guild_id = ? AND channel_id = ?", (guild_id, channel_id))
 
 async def get_all_channel_prompts(guild_id: str) -> dict[str, str]:
@@ -692,6 +710,14 @@ async def get_all_channel_prompts(guild_id: str) -> dict[str, str]:
 # ── Channel provider helpers ──────────────────────────────────────────────────
 
 async def get_channel_provider(guild_id: str, channel_id: str) -> str | None:
+    if USE_POSTGRES:
+        pool = await get_pg()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT provider_name FROM channel_providers WHERE guild_id = $1 AND channel_id = $2",
+                guild_id, channel_id
+            )
+            return row["provider_name"] if row else None
     row = await execute(
         "SELECT provider_name FROM channel_providers WHERE guild_id = ? AND channel_id = ?",
         (guild_id, channel_id), fetch="one"
@@ -699,6 +725,15 @@ async def get_channel_provider(guild_id: str, channel_id: str) -> str | None:
     return row["provider_name"] if row else None
 
 async def set_channel_provider(guild_id: str, channel_id: str, provider_name: str):
+    if USE_POSTGRES:
+        pool = await get_pg()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO channel_providers (guild_id, channel_id, provider_name) VALUES ($1, $2, $3) "
+                "ON CONFLICT(guild_id, channel_id) DO UPDATE SET provider_name = EXCLUDED.provider_name",
+                guild_id, channel_id, provider_name
+            )
+        return
     await execute(
         "INSERT INTO channel_providers (guild_id, channel_id, provider_name) VALUES (?, ?, ?) ON CONFLICT(guild_id, channel_id) DO UPDATE SET provider_name = excluded.provider_name",
         (guild_id, channel_id, provider_name)
