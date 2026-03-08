@@ -795,17 +795,70 @@ async def log_member_message(guild_id: str, user_id: str, username: str, hour: i
     await execute("INSERT INTO member_messages (guild_id, user_id, username, hour) VALUES (?, ?, ?, ?)", (guild_id, user_id, username, hour))
 
 async def get_member_overview(guild_id: str, days: int = 30) -> dict:
+    if USE_POSTGRES:
+        pool = await get_pg()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT SUM(CASE WHEN event_type='join' THEN 1 ELSE 0 END) as joins_30d, "
+                "SUM(CASE WHEN event_type='leave' THEN 1 ELSE 0 END) as leaves_30d "
+                "FROM member_events WHERE guild_id = $1 AND created_at >= NOW() - CAST($2 AS interval)",
+                guild_id, f"{days} days"
+            )
+            msg_row = await conn.fetchrow(
+                "SELECT COUNT(DISTINCT user_id) as active_members, COUNT(*) as total_messages "
+                "FROM member_messages WHERE guild_id = $1 AND created_at >= NOW() - CAST($2 AS interval)",
+                guild_id, f"{days} days"
+            )
+            return {
+                "joins_30d": int(row["joins_30d"] or 0) if row else 0,
+                "leaves_30d": int(row["leaves_30d"] or 0) if row else 0,
+                "active_members": int(msg_row["active_members"] or 0) if msg_row else 0,
+                "total_messages": int(msg_row["total_messages"] or 0) if msg_row else 0,
+            }
     row = await execute("SELECT SUM(CASE WHEN event_type='join' THEN 1 ELSE 0 END) as joins_30d, SUM(CASE WHEN event_type='leave' THEN 1 ELSE 0 END) as leaves_30d FROM member_events WHERE guild_id = ? AND created_at >= datetime('now', ?)", (guild_id, f"-{days} days"), fetch="one")
     msg_row = await execute("SELECT COUNT(DISTINCT user_id) as active_members, COUNT(*) as total_messages FROM member_messages WHERE guild_id = ? AND created_at >= datetime('now', ?)", (guild_id, f"-{days} days"), fetch="one")
     return {**(dict(row) if row else {}), **(dict(msg_row) if msg_row else {})}
 
 async def get_member_join_leave_history(guild_id: str, days: int = 30) -> list[dict]:
+    if USE_POSTGRES:
+        pool = await get_pg()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT DATE(created_at) as date, "
+                "SUM(CASE WHEN event_type='join' THEN 1 ELSE 0 END) as joins, "
+                "SUM(CASE WHEN event_type='leave' THEN 1 ELSE 0 END) as leaves "
+                "FROM member_events WHERE guild_id = $1 AND created_at >= NOW() - CAST($2 AS interval) "
+                "GROUP BY DATE(created_at) ORDER BY date ASC",
+                guild_id, f"{days} days"
+            )
+            return [{"date": str(r["date"]), "joins": int(r["joins"] or 0), "leaves": int(r["leaves"] or 0)} for r in rows]
     return await execute("SELECT DATE(created_at) as date, SUM(CASE WHEN event_type='join' THEN 1 ELSE 0 END) as joins, SUM(CASE WHEN event_type='leave' THEN 1 ELSE 0 END) as leaves FROM member_events WHERE guild_id = ? AND created_at >= datetime('now', ?) GROUP BY DATE(created_at) ORDER BY date ASC", (guild_id, f"-{days} days"), fetch="all") or []
 
 async def get_top_active_members(guild_id: str, days: int = 30, limit: int = 10) -> list[dict]:
+    if USE_POSTGRES:
+        pool = await get_pg()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT user_id, username, COUNT(*) as message_count FROM member_messages "
+                "WHERE guild_id = $1 AND created_at >= NOW() - CAST($2 AS interval) "
+                "GROUP BY user_id, username ORDER BY message_count DESC LIMIT $3",
+                guild_id, f"{days} days", limit
+            )
+            return [{"user_id": r["user_id"], "username": r["username"], "message_count": int(r["message_count"])} for r in rows]
     return await execute("SELECT user_id, username, COUNT(*) as message_count FROM member_messages WHERE guild_id = ? AND created_at >= datetime('now', ?) GROUP BY user_id ORDER BY message_count DESC LIMIT ?", (guild_id, f"-{days} days", limit), fetch="all") or []
 
 async def get_peak_hours(guild_id: str, days: int = 30) -> list[dict]:
+    if USE_POSTGRES:
+        pool = await get_pg()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT hour, COUNT(*) as message_count FROM member_messages "
+                "WHERE guild_id = $1 AND created_at >= NOW() - CAST($2 AS interval) "
+                "GROUP BY hour ORDER BY hour ASC",
+                guild_id, f"{days} days"
+            )
+            row_map = {r["hour"]: int(r["message_count"]) for r in rows}
+            return [{"hour": h, "messages": row_map.get(h, 0)} for h in range(24)]
     rows = await execute("SELECT hour, COUNT(*) as message_count FROM member_messages WHERE guild_id = ? AND created_at >= datetime('now', ?) GROUP BY hour ORDER BY hour ASC", (guild_id, f"-{days} days"), fetch="all") or []
     row_map = {r["hour"]: r["message_count"] for r in rows}
     return [{"hour": h, "messages": row_map.get(h, 0)} for h in range(24)]

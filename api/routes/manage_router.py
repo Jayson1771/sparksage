@@ -262,3 +262,45 @@ async def save_daily_digest(body: dict, user=Depends(get_current_user)):
     await db.set_digest_config(guild_id, "DIGEST_CHANNEL_ID", body.get("channel_id", ""))
     await db.set_digest_config(guild_id, "DIGEST_TIME", body.get("send_time", "09:00"))
     return {"status": "ok"}
+
+# ── Member Analytics ──────────────────────────────────────────────────────────
+@router.get("/member-analytics/overview")
+async def get_member_analytics_overview(days: int = 30, user=Depends(get_current_user)):
+    guild_id = get_guild_id()
+    overview = await db.get_member_overview(guild_id, days)
+    return overview
+
+@router.get("/member-analytics/history")
+async def get_member_analytics_history(days: int = 30, user=Depends(get_current_user)):
+    guild_id = get_guild_id()
+    history = await db.get_member_join_leave_history(guild_id, days)
+    return {"history": [dict(r) for r in history]}
+
+@router.get("/member-analytics/top-members")
+async def get_top_members(days: int = 30, limit: int = 10, user=Depends(get_current_user)):
+    guild_id = get_guild_id()
+    members = await db.get_top_active_members(guild_id, days, limit)
+    return {"members": [dict(r) for r in members]}
+
+@router.get("/member-analytics/peak-hours")
+async def get_peak_hours(days: int = 30, user=Depends(get_current_user)):
+    guild_id = get_guild_id()
+    hours = await db.get_peak_hours(guild_id, days)
+    return {"peak_hours": hours}
+
+@router.get("/member-analytics")
+async def get_member_analytics(days: int = 30, user=Depends(get_current_user)):
+    """Combined endpoint - all member analytics in one call."""
+    guild_id = get_guild_id()
+    overview = await db.get_member_overview(guild_id, days)
+    history = await db.get_member_join_leave_history(guild_id, days)
+    top_members = await db.get_top_active_members(guild_id, days, 10)
+    peak_hours = await db.get_peak_hours(guild_id, days)
+    return {
+        "guild_id": guild_id,
+        "days": days,
+        "overview": overview,
+        "history": [dict(r) for r in history],
+        "top_members": [dict(r) for r in top_members],
+        "peak_hours": peak_hours,
+    }
