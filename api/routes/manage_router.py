@@ -50,15 +50,18 @@ async def debug_guild(user=Depends(get_current_user)):
 @router.get("/debug/conversations")
 async def debug_conversations(user=Depends(get_current_user)):
     """Check what is actually in the conversations table."""
-    import db
     if db.USE_POSTGRES:
         pool = await db.get_pg()
         async with pool.acquire() as conn:
             count = await conn.fetchrow("SELECT COUNT(*) as total FROM conversations")
             recent = await conn.fetch("SELECT channel_id, role, LEFT(content, 50) as preview, created_at FROM conversations ORDER BY id DESC LIMIT 5")
+            channels = await conn.fetch("SELECT channel_id, COUNT(*) as message_count, MAX(created_at) as last_active FROM conversations GROUP BY channel_id ORDER BY last_active DESC")
+            list_ch = await db.list_channels()
             return {
                 "total_messages": int(count["total"]),
-                "recent": [dict(r) for r in recent],
+                "recent": [{"channel_id": r["channel_id"], "role": r["role"], "preview": r["preview"], "created_at": str(r["created_at"])} for r in recent],
+                "channels_direct": [{"channel_id": r["channel_id"], "count": int(r["message_count"])} for r in channels],
+                "list_channels_result": list_ch,
                 "use_postgres": True
             }
     return {"use_postgres": False}
