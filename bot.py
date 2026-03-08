@@ -10,6 +10,7 @@ import db as database
 
 intents = discord.Intents.default()
 intents.message_content = True
+intents.members = True  # Required for on_member_join / on_member_remove events
 
 bot = commands.Bot(command_prefix=config.BOT_PREFIX, intents=intents)
 
@@ -87,7 +88,7 @@ async def on_message(message: discord.Message):
             guild_id=str(message.guild.id) if message.guild else None
         )
         if not allowed:
-            await message.reply(f"⏳ **Rate limited:** {reason}", mention_author=False)
+            await message.reply(f"⏱ **Rate limited:** {reason}", mention_author=False)
             await bot.process_commands(message)
             return
 
