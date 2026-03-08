@@ -46,6 +46,23 @@ async def debug_guild(user=Depends(get_current_user)):
     }
 
 
+
+@router.get("/debug/conversations")
+async def debug_conversations(user=Depends(get_current_user)):
+    """Check what is actually in the conversations table."""
+    import db
+    if db.USE_POSTGRES:
+        pool = await db.get_pg()
+        async with pool.acquire() as conn:
+            count = await conn.fetchrow("SELECT COUNT(*) as total FROM conversations")
+            recent = await conn.fetch("SELECT channel_id, role, LEFT(content, 50) as preview, created_at FROM conversations ORDER BY id DESC LIMIT 5")
+            return {
+                "total_messages": int(count["total"]),
+                "recent": [dict(r) for r in recent],
+                "use_postgres": True
+            }
+    return {"use_postgres": False}
+
 @router.get("/debug/onboarding")
 async def debug_onboarding(user=Depends(get_current_user)):
     """Show exactly what is stored in onboarding_config table."""
