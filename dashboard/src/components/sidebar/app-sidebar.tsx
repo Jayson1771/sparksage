@@ -23,7 +23,7 @@ const NAV_ITEMS = [
   { title: "Settings", href: "/dashboard/settings", icon: Settings },
   { title: "Conversations", href: "/dashboard/conversations", icon: MessageSquare },
   { title: "Analytics", href: "/dashboard/analytics", icon: BarChart2 },
-  { title: "Members", href: "/dashboard/members", icon: Users },
+  // { title: "Members", href: "/dashboard/members", icon: Users },
   { title: "Cost", href: "/dashboard/costs", icon: DollarSign },
   // { title: "CRM", href: "/dashboard/crm", icon: ContactRound },
 ];
