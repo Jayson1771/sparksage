@@ -136,9 +136,35 @@ async def load_cogs():
             print(f"Failed to load cog {cog}: {e}")
 
 
+async def load_enabled_plugins():
+    """Auto-load plugins that were enabled before restart."""
+    import os, json
+    plugins_dir = os.path.join(os.path.dirname(__file__), "plugins")
+    if not os.path.exists(plugins_dir):
+        return
+
+    for guild in bot.guilds:
+        enabled = await database.get_enabled_plugins(str(guild.id))
+        for plugin_name in enabled:
+            manifest_path = os.path.join(plugins_dir, plugin_name, "manifest.json")
+            if not os.path.exists(manifest_path):
+                continue
+            try:
+                with open(manifest_path) as f:
+                    manifest = json.load(f)
+                cog_file = manifest.get("cog", "").replace(".py", "")
+                extension = f"plugins.{plugin_name}.{cog_file}"
+                if extension not in bot.extensions:
+                    await bot.load_extension(extension)
+                    print(f"[Plugins] Auto-loaded: {extension}")
+            except Exception as e:
+                print(f"[Plugins] Failed to auto-load {plugin_name}: {e}")
+
+
 async def start():
     async with bot:
         await load_cogs()
+        await load_enabled_plugins()
         await bot.start(config.DISCORD_TOKEN)
 
 
