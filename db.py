@@ -357,6 +357,14 @@ async def clear_messages(channel_id: str):
     await execute("DELETE FROM conversations WHERE channel_id = ?", (channel_id,))
 
 async def list_channels() -> list[dict]:
+    if USE_POSTGRES:
+        pool = await get_pg()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT channel_id, COUNT(*) as message_count, MAX(created_at) as last_active "
+                "FROM conversations GROUP BY channel_id ORDER BY last_active DESC"
+            )
+            return [{"channel_id": r["channel_id"], "message_count": int(r["message_count"]), "last_active": str(r["last_active"])} for r in rows]
     return await execute(
         "SELECT channel_id, COUNT(*) as message_count, MAX(created_at) as last_active FROM conversations GROUP BY channel_id ORDER BY last_active DESC",
         fetch="all"
@@ -636,6 +644,14 @@ async def get_all_auto_translate_channels(guild_id: str) -> dict[str, str]:
 # ── Channel prompt helpers ────────────────────────────────────────────────────
 
 async def get_channel_prompt(guild_id: str, channel_id: str) -> str | None:
+    if USE_POSTGRES:
+        pool = await get_pg()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT system_prompt FROM channel_prompts WHERE guild_id = $1 AND channel_id = $2",
+                guild_id, channel_id
+            )
+            return row["system_prompt"] if row else None
     row = await execute(
         "SELECT system_prompt FROM channel_prompts WHERE guild_id = ? AND channel_id = ?",
         (guild_id, channel_id), fetch="one"
@@ -643,6 +659,15 @@ async def get_channel_prompt(guild_id: str, channel_id: str) -> str | None:
     return row["system_prompt"] if row else None
 
 async def set_channel_prompt(guild_id: str, channel_id: str, prompt: str):
+    if USE_POSTGRES:
+        pool = await get_pg()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO channel_prompts (guild_id, channel_id, system_prompt) VALUES ($1, $2, $3) "
+                "ON CONFLICT(guild_id, channel_id) DO UPDATE SET system_prompt = EXCLUDED.system_prompt",
+                guild_id, channel_id, prompt
+            )
+        return
     await execute(
         "INSERT INTO channel_prompts (guild_id, channel_id, system_prompt) VALUES (?, ?, ?) ON CONFLICT(guild_id, channel_id) DO UPDATE SET system_prompt = excluded.system_prompt",
         (guild_id, channel_id, prompt)
@@ -652,6 +677,14 @@ async def delete_channel_prompt(guild_id: str, channel_id: str):
     await execute("DELETE FROM channel_prompts WHERE guild_id = ? AND channel_id = ?", (guild_id, channel_id))
 
 async def get_all_channel_prompts(guild_id: str) -> dict[str, str]:
+    if USE_POSTGRES:
+        pool = await get_pg()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT channel_id, system_prompt FROM channel_prompts WHERE guild_id = $1",
+                guild_id
+            )
+            return {r["channel_id"]: r["system_prompt"] for r in rows}
     rows = await execute("SELECT channel_id, system_prompt FROM channel_prompts WHERE guild_id = ?", (guild_id,), fetch="all")
     return {r["channel_id"]: r["system_prompt"] for r in (rows or [])}
 
@@ -719,6 +752,28 @@ async def get_analytics_top_channels(guild_id: str, limit: int = 10) -> list[dic
     ) or []
 
 async def get_global_analytics_summary() -> dict:
+    if USE_POSTGRES:
+        pool = await get_pg()
+        async with pool.acquire() as conn:
+            total_row = await conn.fetchrow("SELECT COUNT(*) as total FROM analytics")
+            total = int(total_row["total"]) if total_row else 0
+            count_rows = await conn.fetch("SELECT event_type, COUNT(*) as count FROM analytics GROUP BY event_type")
+            counts = {r["event_type"]: int(r["count"]) for r in count_rows}
+            avg_row = await conn.fetchrow("SELECT AVG(latency_ms) as avg FROM analytics WHERE latency_ms IS NOT NULL")
+            avg_latency = float(avg_row["avg"] or 0) if avg_row else 0
+            provider_rows = await conn.fetch(
+                "SELECT provider, COUNT(*) as count FROM analytics "
+                "WHERE provider IS NOT NULL AND provider != 'none' "
+                "GROUP BY provider ORDER BY count DESC"
+            )
+            provider_dist = [{"provider": r["provider"], "count": int(r["count"])} for r in provider_rows]
+            daily_rows = await conn.fetch(
+                "SELECT DATE(created_at) as date, COUNT(*) as count FROM analytics "
+                "WHERE created_at >= NOW() - INTERVAL '30 days' "
+                "GROUP BY DATE(created_at) ORDER BY date ASC"
+            )
+            daily = [{"date": str(r["date"]), "count": int(r["count"])} for r in daily_rows]
+            return {"total_events": total, "counts": counts, "avg_latency": round(avg_latency, 2), "provider_distribution": provider_dist, "daily_history": daily}
     row = await execute("SELECT COUNT(*) as total FROM analytics", fetch="one")
     total = row["total"] if row else 0
     rows = await execute("SELECT event_type, COUNT(*) as count FROM analytics GROUP BY event_type", fetch="all") or []
@@ -726,8 +781,8 @@ async def get_global_analytics_summary() -> dict:
     row = await execute("SELECT AVG(latency_ms) as avg FROM analytics WHERE latency_ms IS NOT NULL", fetch="one")
     avg_latency = row["avg"] or 0 if row else 0
     provider_dist = await execute("SELECT provider, COUNT(*) as count FROM analytics WHERE provider IS NOT NULL AND provider != 'none' GROUP BY provider ORDER BY count DESC", fetch="all") or []
-    daily = await execute("SELECT DATE(created_at) as date, COUNT(*) as count FROM analytics WHERE created_at >= (NOW() - INTERVAL '30 days') GROUP BY DATE(created_at) ORDER BY date ASC", fetch="all") or []
-    return {"total_events": total, "counts": counts, "avg_latency": avg_latency, "provider_distribution": provider_dist, "daily_history": daily}
+    daily = await execute("SELECT DATE(created_at) as date, COUNT(*) as count FROM analytics WHERE created_at >= datetime('now', '-30 days') GROUP BY DATE(created_at) ORDER BY date ASC", fetch="all") or []
+    return {"total_events": total, "counts": counts, "avg_latency": avg_latency, "provider_distribution": [dict(r) for r in provider_dist], "daily_history": [dict(r) for r in daily]}
 
 
 # ── Plugin helpers ────────────────────────────────────────────────────────────
