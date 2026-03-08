@@ -45,6 +45,26 @@ async def debug_guild(user=Depends(get_current_user)):
         "hint": "dashboard_guild_id must match your Discord server ID exactly",
     }
 
+
+@router.get("/debug/onboarding")
+async def debug_onboarding(user=Depends(get_current_user)):
+    """Show exactly what is stored in onboarding_config table."""
+    guild_id = get_guild_id()
+    raw = await db.get_all_onboarding_config(guild_id)
+    # Also check what the cog would read
+    enabled = await db.get_onboarding_config(guild_id, "WELCOME_ENABLED")
+    channel = await db.get_onboarding_config(guild_id, "WELCOME_CHANNEL_ID")
+    auto_roles = await db.get_onboarding_config(guild_id, "AUTO_ROLES")
+    return {
+        "guild_id": guild_id,
+        "raw_table_contents": raw,
+        "cog_reads": {
+            "WELCOME_ENABLED": enabled,
+            "WELCOME_CHANNEL_ID": channel,
+            "AUTO_ROLES": auto_roles,
+        }
+    }
+
 # ── Channel Prompts ───────────────────────────────────────────────────────────
 @router.get("/channel-prompts")
 async def get_channel_prompts(user=Depends(get_current_user)):
