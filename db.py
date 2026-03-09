@@ -37,13 +37,18 @@ async def get_db() -> aiosqlite.Connection:
 async def get_pg():
     """Return asyncpg pool for the CURRENT event loop.
     Each event loop (uvicorn, discord bot) gets its own pool.
+    Always re-reads DATABASE_URL from env to avoid stale import-time value.
     """
     import asyncio
     import asyncpg
+    # Always read fresh from env - never use the module-level DATABASE_URL
+    live_url = os.getenv("DATABASE_URL", "")
+    if not live_url:
+        raise RuntimeError("DATABASE_URL is not set")
+    url = live_url.replace("postgres://", "postgresql://", 1)
     loop = asyncio.get_event_loop()
     loop_id = id(loop)
     if loop_id not in _pg_pools or _pg_pools[loop_id].is_closing():
-        url = DATABASE_URL.replace("postgres://", "postgresql://", 1)
         _pg_pools[loop_id] = await asyncpg.create_pool(
             url,
             min_size=1,
@@ -336,9 +341,10 @@ async def sync_db_to_env():
 # ── Conversation helpers ──────────────────────────────────────────────────────
 
 async def add_message(channel_id: str, role: str, content: str, provider: str | None = None):
-    # Re-check USE_POSTGRES at runtime in case env var was loaded after module import
-    use_pg = _get_database_url().startswith("postgresql") or _get_database_url().startswith("postgres")
-    print(f"[add_message] use_pg={use_pg} channel={channel_id} role={role}")
+    # Always re-read from env at runtime
+    live_url = os.getenv("DATABASE_URL", "")
+    use_pg = live_url.startswith("postgresql") or live_url.startswith("postgres")
+    print(f"[add_message] use_pg={use_pg} url_set={bool(live_url)} channel={channel_id} role={role}")
     if use_pg:
         pool = await get_pg()
         async with pool.acquire() as conn:

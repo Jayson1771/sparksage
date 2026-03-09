@@ -56,20 +56,21 @@ def reload_clients():
 
 def get_available_providers() -> list[str]:
     """Return list of provider names that have valid API keys configured."""
-    return [name for name in FALLBACK_ORDER if name in _clients]
+    # Always rebuild from current config to avoid stale state
+    order = _build_fallback_order()
+    clients = _build_clients()
+    return [name for name in order if name in clients]
 
 
 def test_provider(name: str) -> dict:
-    """Test a provider with a minimal API call. Returns {success, latency_ms, error}."""
+    """Test a provider with a minimal API call."""
     provider = config.PROVIDERS.get(name)
     if not provider:
         return {"success": False, "latency_ms": 0, "error": f"Unknown provider: {name}"}
 
-    client = _clients.get(name)
+    client = _create_client(name)
     if not client:
-        client = _create_client(name)
-        if not client:
-            return {"success": False, "latency_ms": 0, "error": "No API key configured"}
+        return {"success": False, "latency_ms": 0, "error": "No API key configured"}
 
     try:
         start = time.time()
@@ -86,15 +87,18 @@ def test_provider(name: str) -> dict:
 
 
 def chat(messages: list[dict], system_prompt: str) -> tuple[str, str]:
-    """Send messages to AI and return (response_text, provider_name).
-
-    Tries the primary provider first, then falls back through free providers.
-    Raises RuntimeError if all providers fail.
+    """Send messages to AI using current primary provider with fallback.
+    Always rebuilds fallback order from current config.AI_PROVIDER.
     """
+    # Always use current config - never stale module-level FALLBACK_ORDER
+    fallback_order = _build_fallback_order()
+    clients = _build_clients()
     errors = []
 
-    for provider_name in FALLBACK_ORDER:
-        client = _clients.get(provider_name)
+    print(f"[providers.chat] primary={config.AI_PROVIDER} order={fallback_order}")
+
+    for provider_name in fallback_order:
+        client = clients.get(provider_name)
         if not client:
             continue
 
@@ -109,10 +113,12 @@ def chat(messages: list[dict], system_prompt: str) -> tuple[str, str]:
                 ],
             )
             text = response.choices[0].message.content
+            print(f"[providers.chat] succeeded with {provider_name}")
             return text, provider_name
 
         except Exception as e:
             errors.append(f"{provider['name']}: {e}")
+            print(f"[providers.chat] {provider_name} failed: {e}")
             continue
 
     error_details = "\n".join(errors)
@@ -121,7 +127,7 @@ def chat(messages: list[dict], system_prompt: str) -> tuple[str, str]:
 
 def chat_with_provider(messages: list[dict], system_prompt: str, provider_name: str) -> tuple[str, str]:
     """Send messages to a specific provider, falling back to default chain if it fails."""
-    client = _clients.get(provider_name)
+    client = _create_client(provider_name)
     if not client:
         return chat(messages, system_prompt)
 
