@@ -4,11 +4,17 @@ import os
 import json
 import aiosqlite
 
-DATABASE_URL = os.getenv("DATABASE_URL", "")
 DATABASE_PATH = os.getenv("DATABASE_PATH", "sparksage.db")
 
-# Use PostgreSQL if DATABASE_URL is set, otherwise SQLite
+# Always re-read DATABASE_URL at runtime to avoid stale module-load value
+def _get_database_url() -> str:
+    return os.getenv("DATABASE_URL", "")
+
+DATABASE_URL = _get_database_url()
 USE_POSTGRES = DATABASE_URL.startswith("postgresql") or DATABASE_URL.startswith("postgres")
+
+# Log on startup so we can verify which DB is being used
+print(f"[DB] DATABASE_URL set: {bool(DATABASE_URL)}, USE_POSTGRES: {USE_POSTGRES}")
 
 _db: aiosqlite.Connection | None = None
 # Per-loop pool cache: {loop_id: pool}
@@ -330,7 +336,10 @@ async def sync_db_to_env():
 # ── Conversation helpers ──────────────────────────────────────────────────────
 
 async def add_message(channel_id: str, role: str, content: str, provider: str | None = None):
-    if USE_POSTGRES:
+    # Re-check USE_POSTGRES at runtime in case env var was loaded after module import
+    use_pg = _get_database_url().startswith("postgresql") or _get_database_url().startswith("postgres")
+    print(f"[add_message] use_pg={use_pg} channel={channel_id} role={role}")
+    if use_pg:
         pool = await get_pg()
         async with pool.acquire() as conn:
             await conn.execute(
