@@ -89,9 +89,17 @@ async def debug_onboarding(user=Depends(get_current_user)):
 @router.get("/channel-prompts")
 async def get_channel_prompts(user=Depends(get_current_user)):
     guild_id = get_guild_id()
-    raw = await db.get_all_channel_prompts(guild_id)
-    prompts = [{"channel_id": cid, "channel_name": "", "system_prompt": prompt, "enabled": True}
-               for cid, prompt in raw.items()]
+    if db.USE_POSTGRES:
+        pool = await db.get_pg()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT channel_id, system_prompt FROM channel_prompts WHERE guild_id = $1",
+                guild_id
+            )
+            prompts = [{"channel_id": r["channel_id"], "channel_name": "", "system_prompt": r["system_prompt"], "enabled": True} for r in rows]
+    else:
+        raw = await db.get_all_channel_prompts(guild_id)
+        prompts = [{"channel_id": cid, "channel_name": "", "system_prompt": prompt, "enabled": True} for cid, prompt in raw.items()]
     return {"prompts": prompts}
 
 @router.post("/channel-prompts")
@@ -101,13 +109,30 @@ async def save_channel_prompt(body: dict, user=Depends(get_current_user)):
     prompt = body.get("system_prompt", "").strip()
     if not channel_id or not prompt:
         raise HTTPException(status_code=400, detail="channel_id and system_prompt required")
-    await db.set_channel_prompt(guild_id, channel_id, prompt)
+    if db.USE_POSTGRES:
+        pool = await db.get_pg()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO channel_prompts (guild_id, channel_id, system_prompt) VALUES ($1, $2, $3) "
+                "ON CONFLICT(guild_id, channel_id) DO UPDATE SET system_prompt = EXCLUDED.system_prompt",
+                guild_id, channel_id, prompt
+            )
+    else:
+        await db.set_channel_prompt(guild_id, channel_id, prompt)
     return {"status": "ok"}
 
 @router.delete("/channel-prompts/{channel_id}")
-async def delete_channel_prompt(channel_id: str, user=Depends(get_current_user)):
+async def delete_channel_prompt_route(channel_id: str, user=Depends(get_current_user)):
     guild_id = get_guild_id()
-    await db.delete_channel_prompt(guild_id, channel_id)
+    if db.USE_POSTGRES:
+        pool = await db.get_pg()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "DELETE FROM channel_prompts WHERE guild_id = $1 AND channel_id = $2",
+                guild_id, channel_id
+            )
+    else:
+        await db.delete_channel_prompt(guild_id, channel_id)
     return {"status": "ok"}
 
 # ── Onboarding ────────────────────────────────────────────────────────────────
